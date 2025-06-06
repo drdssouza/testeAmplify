@@ -1,27 +1,17 @@
 version: 1
-applications:
-  - frontend:
-      phases:
-        preBuild:
-          commands:
-            - npm ci
-        build:
-          commands:
-            - npm run build
-      artifacts:
-        baseDirectory: .next  
-        files:
-          - '**/*'
-      cache:
-        paths:
-          - node_modules/**/*
-          - .next/cache/**/*
-      buildSettings:
-        env:
-          variables:
-            NODE_ENV: production
-            NEXT_TELEMETRY_DISABLED: 1
-            # Adicione suas variáveis da AWS aqui:
-            # API_GATEWAY_URL: $API_GATEWAY_URL
-            # API_KEY: $API_KEY
-    appRoot: /
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - npm ci
+    build:
+      commands:
+        - npm run build
+  artifacts:
+    baseDirectory: .next
+    files:
+      - '**/*'
+  cache:
+    paths:
+      - node_modules/**/*
+      - .next/cache/**/*

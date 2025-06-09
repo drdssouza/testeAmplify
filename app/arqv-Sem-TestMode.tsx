@@ -17,158 +17,45 @@ export default function Home() {
   const [fileContent, setFileContent] = useState('');
   const [showFilePreview, setShowFilePreview] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [selectedLanguage, setSelectedLanguage] = useState<CodeLanguage | null>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState<CodeLanguage | null>(null); // Mudança aqui: permite null
   const [generatedCode, setGeneratedCode] = useState('');
   const [editedCode, setEditedCode] = useState('');
   const [bddTest, setBddTest] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [pollingStatus, setPollingStatus] = useState('');
   const [error, setError] = useState('');
-  const [showCodeReference, setShowCodeReference] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // SIMULAÇÃO - Código de exemplo para teste
-  const sampleCodes = {
-    python: `# Código Python Gerado
-class UserManager:
-    def __init__(self):
-        self.users = []
-    
-    def create_user(self, name, email):
-        """Cria um novo usuário"""
-        user = {
-            'id': len(self.users) + 1,
-            'name': name,
-            'email': email,
-            'active': True
+  // Função para fazer polling no S3
+  const pollS3File = async (presignedUrl: string, maxAttempts = 30, interval = 2000): Promise<string> => {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        setPollingStatus(`Verificando arquivo... (${attempt}/${maxAttempts})`);
+        
+        const response = await fetch(presignedUrl, { method: 'HEAD' });
+        
+        if (response.ok) {
+          // Arquivo existe, fazer download do conteúdo
+          const contentResponse = await fetch(presignedUrl);
+          if (contentResponse.ok) {
+            const content = await contentResponse.text();
+            setPollingStatus('');
+            return content;
+          }
         }
-        self.users.append(user)
-        return user
-    
-    def get_user(self, user_id):
-        """Busca usuário por ID"""
-        for user in self.users:
-            if user['id'] == user_id:
-                return user
-        return None
-    
-    def update_user(self, user_id, name=None, email=None):
-        """Atualiza dados do usuário"""
-        user = self.get_user(user_id)
-        if user:
-            if name:
-                user['name'] = name
-            if email:
-                user['email'] = email
-            return user
-        return None`,
-    
-    java: `// Código Java Gerado
-import java.util.*;
-
-public class UserManager {
-    private List<User> users;
-    
-    public UserManager() {
-        this.users = new ArrayList<>();
-    }
-    
-    public User createUser(String name, String email) {
-        User user = new User(users.size() + 1, name, email);
-        users.add(user);
-        return user;
-    }
-    
-    public User getUser(int userId) {
-        return users.stream()
-                   .filter(user -> user.getId() == userId)
-                   .findFirst()
-                   .orElse(null);
-    }
-    
-    public User updateUser(int userId, String name, String email) {
-        User user = getUser(userId);
-        if (user != null) {
-            if (name != null) user.setName(name);
-            if (email != null) user.setEmail(email);
+        
+        if (attempt < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, interval));
         }
-        return user;
-    }
-}
-
-class User {
-    private int id;
-    private String name;
-    private String email;
-    private boolean active;
-    
-    public User(int id, String name, String email) {
-        this.id = id;
-        this.name = name;
-        this.email = email;
-        this.active = true;
+      } catch (error) {
+        console.error(`Tentativa ${attempt} falhou:`, error);
+        if (attempt < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, interval));
+        }
+      }
     }
     
-    // Getters e Setters
-    public int getId() { return id; }
-    public String getName() { return name; }
-    public void setName(String name) { this.name = name; }
-    public String getEmail() { return email; }
-    public void setEmail(String email) { this.email = email; }
-    public boolean isActive() { return active; }
-    public void setActive(boolean active) { this.active = active; }
-}`
-  };
-
-  const sampleBDD = `Feature: Gerenciamento de Usuários
-  Como um administrador do sistema
-  Eu quero gerenciar usuários
-  Para que eu possa manter o controle de acesso
-
-  Background:
-    Given o sistema de gerenciamento está funcionando
-    And o banco de dados está acessível
-
-  Scenario: Criar novo usuário com sucesso
-    Given eu tenho as informações de um novo usuário
-    When eu envio uma requisição para criar o usuário
-    Then o usuário deve ser criado com sucesso
-    And o usuário deve receber um ID único
-    And o status do usuário deve ser "ativo"
-
-  Scenario: Buscar usuário existente
-    Given existe um usuário no sistema
-    When eu busco o usuário pelo ID
-    Then o sistema deve retornar os dados do usuário
-    And as informações devem estar corretas
-
-  Scenario: Atualizar dados do usuário
-    Given existe um usuário no sistema
-    When eu envio uma requisição para atualizar o usuário
-    Then os dados do usuário devem ser atualizados
-    And o sistema deve confirmar a atualização
-
-  Scenario: Buscar usuário inexistente
-    Given não existe usuário com o ID especificado
-    When eu busco o usuário pelo ID
-    Then o sistema deve retornar null ou erro 404
-    And deve informar que o usuário não foi encontrado`;
-
-  // SIMULAÇÃO - Função para simular API calls
-  const simulatePolling = async (action: string) => {
-    const statuses = [
-      'Iniciando processamento...',
-      'Conectando com AWS Bedrock...',
-      'Processando com IA...',
-      'Finalizando geração...'
-    ];
-    
-    for (let i = 0; i < statuses.length; i++) {
-      setPollingStatus(statuses[i]);
-      await new Promise(resolve => setTimeout(resolve, 800));
-    }
-    
-    setPollingStatus('');
+    throw new Error('Timeout: Arquivo não foi gerado no tempo esperado');
   };
 
   const processFile = (file: File) => {
@@ -218,15 +105,15 @@ class User {
     }
   };
 
+  // Função para alternar seleção de linguagem
   const toggleLanguageSelection = (language: CodeLanguage) => {
     if (selectedLanguage === language) {
-      setSelectedLanguage(null);
+      setSelectedLanguage(null); // Deseleciona se clicar na mesma
     } else {
-      setSelectedLanguage(language);
+      setSelectedLanguage(language); // Seleciona a nova linguagem
     }
   };
 
-  // SIMULAÇÃO - Gerar código
   const generateCode = async () => {
     const content = uploadedFile ? fileContent : userStory.trim();
     if (!content) {
@@ -239,25 +126,59 @@ class User {
       return;
     }
 
+    if (!selectedLanguage) {
+      setError('Selecione uma linguagem de programação');
+      return;
+    }
+
     setIsLoading(true);
     setError('');
+    setPollingStatus('Iniciando geração de código...');
     
     try {
-      await simulatePolling('generateCode');
+      // 1. Chamar API Gateway que aciona Step Function (com fallback imediato)
+      const response = await fetch('/api/generate-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          userStory: content, 
+          language: selectedLanguage,
+          requestId: crypto.randomUUID()
+        }),
+      });
+
+      if (!response.ok) throw new Error('Erro ao iniciar geração de código');
+      const data = await response.json();
       
-      const code = sampleCodes[selectedLanguage];
-      setGeneratedCode(code);
-      setEditedCode(code);
+      // 2. API Gateway retorna presigned URL imediatamente
+      const presignedUrl = data.presignedUrl;
+      if (!presignedUrl) {
+        throw new Error('URL de monitoramento não foi fornecida');
+      }
+
+      setPollingStatus('Aguardando processamento...');
+
+      // 3. Fazer polling no S3 até o arquivo estar disponível
+      const generatedContent = await pollS3File(presignedUrl);
+      
+      if (!generatedContent) {
+        throw new Error('Código não foi gerado');
+      }
+      
+      setGeneratedCode(generatedContent);
+      setEditedCode(generatedContent);
       setCurrentStep('code-review');
+      setPollingStatus('');
       
     } catch (error) {
-      setError('Erro ao gerar código. Tente novamente.');
+      console.error('Erro na geração:', error);
+      setError(error instanceof Error ? error.message : 'Erro ao gerar código. Tente novamente.');
+      setPollingStatus('');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // SIMULAÇÃO - Gerar BDD
   const generateBDD = async () => {
     if (!editedCode.trim()) {
       setError('Código é necessário para gerar testes BDD');
@@ -266,15 +187,46 @@ class User {
 
     setIsLoading(true);
     setError('');
+    setPollingStatus('Iniciando geração de testes BDD...');
 
     try {
-      await simulatePolling('generateBDD');
+      // 1. Chamar API Gateway que aciona Step Function (com fallback imediato)
+      const response = await fetch('/api/generate-bdd', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          code: editedCode, 
+          language: selectedLanguage,
+          requestId: crypto.randomUUID()
+        }),
+      });
+
+      if (!response.ok) throw new Error('Erro ao iniciar geração de testes BDD');
+      const data = await response.json();
       
-      setBddTest(sampleBDD);
+      // 2. API Gateway retorna presigned URL imediatamente
+      const presignedUrl = data.presignedUrl;
+      if (!presignedUrl) {
+        throw new Error('URL de monitoramento não foi fornecida');
+      }
+
+      setPollingStatus('Aguardando processamento...');
+
+      // 3. Fazer polling no S3 até o arquivo estar disponível
+      const bddContent = await pollS3File(presignedUrl);
+      
+      if (!bddContent) {
+        throw new Error('Testes BDD não foram gerados');
+      }
+      
+      setBddTest(bddContent);
       setCurrentStep('download');
+      setPollingStatus('');
       
     } catch (error) {
-      setError('Erro ao gerar testes BDD. Tente novamente.');
+      console.error('Erro na geração de BDD:', error);
+      setError(error instanceof Error ? error.message : 'Erro ao gerar testes BDD. Tente novamente.');
+      setPollingStatus('');
     } finally {
       setIsLoading(false);
     }
@@ -297,7 +249,7 @@ class User {
     }
   };
 
-  const downloadZipFiles = () => {
+  const downloadFiles = () => {
     const timestamp = new Date().toISOString().slice(0, 16).replace(/[:-]/g, '');
     const ext = selectedLanguage === 'python' ? 'py' : 'java';
     const fileName = selectedLanguage === 'python' ? 'generated_code' : 'GeneratedCode';
@@ -328,13 +280,12 @@ class User {
     setFileContent('');
     setShowFilePreview(false);
     setIsDragOver(false);
-    setSelectedLanguage(null);
+    setSelectedLanguage(null); // Reset para null
     setGeneratedCode('');
     setEditedCode('');
     setBddTest('');
     setPollingStatus('');
     setError('');
-    setShowCodeReference(false);
   };
 
   const steps = [
@@ -355,7 +306,7 @@ class User {
               </div>
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">Gerador de Código IA</h1>
-                <p className="text-sm text-gray-600">Powered by AWS & Compass UOL</p>
+                <p className="text-sm text-gray-600">Powered by AWS  & Developed by Compass UOL</p>
               </div>
             </div>
             <div className="flex items-center space-x-3 text-sm text-gray-500">
@@ -366,15 +317,6 @@ class User {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
-        {/* Banner de Teste */}
-        <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-          <div className="flex items-center">
-            <ExclamationTriangleIcon className="h-5 w-5 text-yellow-400 mr-2" />
-            <span className="text-yellow-700 font-medium">🧪 MODO TESTE</span>
-            <span className="text-yellow-600 ml-2">- Simula respostas da API para validação do fluxo</span>
-          </div>
-        </div>
-
         {/* Progress Steps */}
         <div className="mb-8 flex items-center justify-center space-x-8">
           {steps.map((step, index) => {
@@ -508,7 +450,7 @@ class User {
                 />
               </div>
 
-              {/* Language Selection */}
+              {/* Language Selection - CORRIGIDO */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-3">
                   Escolha a linguagem <span className="text-red-500">*</span>
@@ -607,10 +549,7 @@ class User {
 
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold">
-                  <PencilSquareIcon className="h-5 w-5 inline mr-2 text-gray-600" />
-                  Editar e Validar Código
-                </h3>
+                <h3 className="text-lg font-semibold">Código Gerado</h3>
                 <button
                   onClick={() => copyToClipboard(editedCode)}
                   className="flex items-center px-3 py-1 border border-gray-300 rounded-md text-sm hover:bg-gray-50"
@@ -620,24 +559,12 @@ class User {
                 </button>
               </div>
               
-              <div className="bg-yellow-50 border border-yellow-200 rounded-md p-3">
-                <p className="text-sm text-yellow-700">
-                  💡 <strong>Dica:</strong> Revise e edite o código antes de gerar os testes BDD. 
-                  Você pode fazer ajustes, correções ou melhorias no código gerado.
-                </p>
-              </div>
-              
               <textarea
                 value={editedCode}
                 onChange={(e) => setEditedCode(e.target.value)}
-                className="w-full h-80 px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:ring-blue-500 focus:border-blue-500 resize-none"
+                className="w-full h-80 px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:ring-blue-500 focus:border-blue-500"
                 placeholder="Código será gerado aqui..."
               />
-              
-              <div className="text-sm text-gray-500 flex justify-between">
-                <span>{editedCode.split('\n').length} linhas • {editedCode.length} caracteres</span>
-                <span>Pressione Ctrl+Z para desfazer</span>
-              </div>
             </div>
 
             <div className="flex justify-between mt-8">
@@ -649,7 +576,7 @@ class User {
               </button>
               <button
                 onClick={generateBDD}
-                disabled={isLoading || !editedCode.trim()}
+                disabled={isLoading || !editedCode}
                 className="px-6 py-2 bg-gradient-to-r from-green-600 to-teal-600 text-white rounded-md hover:from-green-700 hover:to-teal-700 disabled:opacity-50"
               >
                 {isLoading ? (
@@ -658,7 +585,7 @@ class User {
                     {pollingStatus || 'Gerando Testes...'}
                   </div>
                 ) : (
-                  'Validar e Gerar Testes BDD'
+                  'Gerar Testes BDD'
                 )}
               </button>
             </div>
@@ -668,84 +595,27 @@ class User {
         {/* Download Step */}
         {currentStep === 'download' && (
           <div className="bg-white rounded-xl shadow-lg p-8">
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Testes BDD Gerados</h2>
+            <h2 className="text-2xl font-bold text-gray-900 mb-6">Arquivos Gerados</h2>
             
-            <div className="space-y-6">
-              {/* Código de Referência - Retraível */}
-              <div className="border rounded-lg">
-                <div 
-                  className="flex items-center justify-between p-4 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
-                  onClick={() => setShowCodeReference(!showCodeReference)}
-                >
-                  <div className="flex items-center space-x-3">
-                    <div className={`px-2 py-1 rounded text-xs font-medium ${
-                      selectedLanguage === 'python' ? 'bg-blue-100 text-blue-800' : 'bg-orange-100 text-orange-800'
-                    }`}>
-                      {selectedLanguage === 'python' ? '🐍 Python' : '☕ Java'}
-                    </div>
-                    <h3 className="text-lg font-semibold text-gray-700">
-                      Código de Referência Utilizado
-                    </h3>
-                  </div>
-                  <div className="flex items-center text-sm text-gray-500">
-                    <span className="mr-2">{showCodeReference ? 'Retrair' : 'Expandir'}</span>
-                    <div className={`transform transition-transform ${showCodeReference ? 'rotate-180' : ''}`}>
-                      ↓
-                    </div>
-                  </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+              <div className="border rounded-lg p-4">
+                <h3 className="text-lg font-semibold mb-2">
+                  {selectedLanguage === 'python' ? '🐍' : '☕'} Código {selectedLanguage === 'python' ? 'Python' : 'Java'}
+                </h3>
+                <div className="bg-gray-50 rounded p-3 h-32 overflow-y-auto">
+                  <pre className="text-xs text-gray-600">{editedCode.substring(0, 200)}...</pre>
                 </div>
-                
-                {showCodeReference && (
-                  <div className="p-4 border-t">
-                    <div className="bg-gray-50 rounded p-3 max-h-60 overflow-y-auto">
-                      <pre className="text-sm text-gray-700 font-mono">{editedCode}</pre>
-                    </div>
-                    <div className="mt-2 text-xs text-gray-500 flex justify-between">
-                      <span>{editedCode.split('\n').length} linhas</span>
-                      <button
-                        onClick={() => copyToClipboard(editedCode)}
-                        className="text-blue-600 hover:text-blue-800"
-                      >
-                        Copiar código
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
-
-              {/* Testes BDD Completos */}
-              <div className="border rounded-lg">
-                <div className="p-4 bg-green-50 border-b">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold text-green-800 flex items-center">
-                      🧪 Testes BDD Gerados
-                      <span className="ml-2 px-2 py-1 bg-green-200 text-green-700 text-xs rounded-full">
-                        Gherkin
-                      </span>
-                    </h3>
-                    <button
-                      onClick={() => copyToClipboard(bddTest)}
-                      className="flex items-center px-3 py-1 border border-green-300 rounded-md text-sm text-green-700 hover:bg-green-100"
-                    >
-                      <ClipboardDocumentIcon className="h-4 w-4 mr-1" />
-                      Copiar BDD
-                    </button>
-                  </div>
-                </div>
-                
-                <div className="p-4">
-                  <div className="bg-gray-50 rounded p-4 max-h-96 overflow-y-auto">
-                    <pre className="text-sm text-gray-700 font-mono whitespace-pre-wrap">{bddTest}</pre>
-                  </div>
-                  <div className="mt-3 text-xs text-gray-500 flex justify-between">
-                    <span>{bddTest.split('\n').length} linhas • {bddTest.length} caracteres</span>
-                    <span>Formato: Cucumber/Gherkin (.feature)</span>
-                  </div>
+              
+              <div className="border rounded-lg p-4">
+                <h3 className="text-lg font-semibold mb-2">🧪 Testes BDD</h3>
+                <div className="bg-gray-50 rounded p-3 h-32 overflow-y-auto">
+                  <pre className="text-xs text-gray-600">{bddTest.substring(0, 200)}...</pre>
                 </div>
               </div>
             </div>
 
-            <div className="flex justify-between mt-8">
+            <div className="flex justify-between">
               <button
                 onClick={resetFlow}
                 className="px-6 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
@@ -753,7 +623,7 @@ class User {
                 Nova Geração
               </button>
               <button
-                onClick={downloadZipFiles}
+                onClick={downloadFiles}
                 className="flex items-center px-6 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-md hover:from-blue-700 hover:to-purple-700"
               >
                 <ArrowDownTrayIcon className="h-4 w-4 mr-2" />

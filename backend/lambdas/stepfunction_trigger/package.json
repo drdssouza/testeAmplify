@@ -1,0 +1,8 @@
+{
+  "name": "lambda-stepfunction-trigger",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-sfn": "^3.541.0"
+  }
+}

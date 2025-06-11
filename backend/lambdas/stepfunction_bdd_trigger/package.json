@@ -1,0 +1,10 @@
+{
+  "name": "lambda_stepfunction_bdd_trigger",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-sfn": "^3.541.0",
+    "@aws-sdk/client-s3": "^3.541.0",
+    "@aws-sdk/s3-request-presigner": "^3.541.0"
+  }
+}

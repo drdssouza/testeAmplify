@@ -89,6 +89,17 @@ data "archive_file" "save_zip" {
   output_path = "${path.module}/lambdas/save_and_return_data.zip"
 }
 
+data "archive_file" "bdd_trigger_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/../lambdas/stepfunction_bdd_trigger"
+  output_path = "${path.module}/lambdas/stepfunction_bdd_trigger.zip"
+}
+
+data "archive_file" "bdd_test_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/../lambdas/generate_bdd_teste"
+  output_path = "${path.module}/lambdas/generate_bdd_teste.zip"
+}
 
 # Lambda functions
 
@@ -104,8 +115,8 @@ resource "aws_lambda_function" "stepfunction_trigger" {
 
   environment {
     variables = {
-      SFN_ARN = aws_sfn_state_machine.generate_code_flow.arn
-      RESULT_BUCKET = aws_s3_bucket.results.bucket  
+      SFN_ARN       = aws_sfn_state_machine.generate_code_flow.arn
+      RESULT_BUCKET = aws_s3_bucket.results.bucket
     }
   }
 }
@@ -151,7 +162,7 @@ resource "aws_lambda_function" "save_and_return_data" {
   filename         = data.archive_file.save_zip.output_path
   source_code_hash = data.archive_file.save_zip.output_base64sha256
   memory_size      = 128
-  timeout          = 15
+  timeout          = 30
 
   environment {
     variables = {
@@ -160,6 +171,40 @@ resource "aws_lambda_function" "save_and_return_data" {
   }
 }
 
+resource "aws_lambda_function" "generate_bdd_teste" {
+  function_name    = "generate_bdd_teste"
+  handler          = "index.handler"
+  runtime          = var.node_runtime_version
+  role             = aws_iam_role.lambda_exec.arn
+  filename         = data.archive_file.bdd_test_zip.output_path
+  source_code_hash = data.archive_file.bdd_test_zip.output_base64sha256
+  memory_size      = 128
+  timeout          = 30
+
+  environment {
+    variables = {
+      RESULT_BUCKET = aws_s3_bucket.results.bucket
+    }
+  }
+}
+
+resource "aws_lambda_function" "stepfunction_bdd_trigger" {
+  function_name    = "stepfunction_bdd_trigger"
+  handler          = "index.handler"
+  runtime          = var.node_runtime_version
+  role             = aws_iam_role.lambda_exec.arn
+  filename         = data.archive_file.bdd_trigger_zip.output_path
+  source_code_hash = data.archive_file.bdd_trigger_zip.output_base64sha256
+  memory_size      = 256
+  timeout          = 10 # só dispara StartExecution
+
+  environment {
+    variables = {
+      SFN_ARN       = aws_sfn_state_machine.generate_bdd_flow.arn
+      RESULT_BUCKET = aws_s3_bucket.results.bucket
+    }
+  }
+}
 
 # CloudWatch Log Group for Step Functions
 
@@ -223,6 +268,9 @@ resource "aws_iam_role_policy" "sfn_invoke_and_logs" {
 
 
 # Step Function definition
+
+
+
 locals {
   sfn_definition = jsonencode({
     Comment = "Generate code flow",
@@ -305,7 +353,63 @@ resource "aws_sfn_state_machine" "generate_code_flow" {
     include_execution_data = true
     level                  = "ALL"
   }
+}
 
+# generate_bdd state_machine
+
+locals {
+  sfn_bdd_definition = jsonencode({
+    Comment = "Generate BDD test flow",
+    StartAt = "GenerateBDDTest",
+    States = {
+      GenerateBDDTest = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = aws_lambda_function.generate_bdd_teste.arn
+          "Payload.$"  = "$"
+        },
+        ResultPath = "$.bddResult",
+        End        = true
+      }
+    }
+  })
+}
+
+resource "aws_iam_role_policy" "sfn_bdd_invoke_and_logs" {
+  name = "sfn-bdd-invoke"
+  role = aws_iam_role.sfn_role.id
+  policy = jsonencode({
+    Version : "2012-10-17",
+    Statement : [
+      {
+        Effect   = "Allow",
+        Action   = ["lambda:InvokeFunction"],
+        Resource = [aws_lambda_function.generate_bdd_teste.arn]
+      },
+      {
+        Effect : "Allow",
+        Action : [
+          "logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery",
+          "logs:DeleteLogDelivery", "logs:ListLogDeliveries",
+          "logs:PutResourcePolicy", "logs:DescribeResourcePolicies", "logs:DescribeLogGroups"
+        ],
+        Resource : "*"
+      }
+    ]
+  })
+}
+
+resource "aws_sfn_state_machine" "generate_bdd_flow" {
+  name       = "generate-bdd-flow"
+  role_arn   = aws_iam_role.sfn_role.arn
+  type       = "STANDARD"
+  definition = local.sfn_bdd_definition
+  logging_configuration {
+    log_destination        = "${aws_cloudwatch_log_group.sfn_logs.arn}:*"
+    include_execution_data = true
+    level                  = "ALL"
+  }
 }
 
 
@@ -316,6 +420,15 @@ resource "aws_lambda_permission" "allow_sfn_extract" {
   function_name = aws_lambda_function.extract_content_data.arn
   principal     = "states.amazonaws.com"
   source_arn    = aws_sfn_state_machine.generate_code_flow.arn
+}
+
+
+resource "aws_lambda_permission" "allow_sfn_bdd_test" {
+  statement_id  = "AllowSFNBDDTest"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.generate_bdd_teste.arn
+  principal     = "states.amazonaws.com"
+  source_arn    = aws_sfn_state_machine.generate_bdd_flow.arn
 }
 
 resource "aws_lambda_permission" "allow_sfn_java" {
@@ -374,6 +487,27 @@ resource "aws_lambda_permission" "allow_apigw" {
   statement_id  = "AllowInvokeFromAPIGateway"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.stepfunction_trigger.arn
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.api.execution_arn}/*/*"
+}
+
+resource "aws_apigatewayv2_integration" "bdd_trigger_integration" {
+  api_id                 = aws_apigatewayv2_api.api.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.stepfunction_bdd_trigger.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "generate_bdd_route" {
+  api_id    = aws_apigatewayv2_api.api.id
+  route_key = "POST /generate_bdd"
+  target    = "integrations/${aws_apigatewayv2_integration.bdd_trigger_integration.id}"
+}
+
+resource "aws_lambda_permission" "allow_apigw_bdd" {
+  statement_id  = "AllowInvokeFromAPIGatewayBDD"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.stepfunction_bdd_trigger.arn
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.api.execution_arn}/*/*"
 }

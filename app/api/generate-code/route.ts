@@ -1,86 +1,122 @@
-// app/api/generate-code/route.ts
-import { NextRequest, NextResponse } from 'next/server';
+import { NextApiRequest, NextApiResponse } from 'next';
+import { StepLLMSelections } from '../../types/llm-types';
 
-const API_GATEWAY_URL = process.env.API_GATEWAY_URL || '';
+interface GenerateCodeRequest {
+  userStory: string;
+  language: 'python' | 'java';
+  llmSelections: StepLLMSelections;
+  requestId: string;
+}
 
-export async function POST(request: NextRequest) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
   try {
-    const { userStory, language, requestId } = await request.json();
+    const { userStory, language, llmSelections, requestId }: GenerateCodeRequest = req.body;
+
+    // Validação dos dados
+    if (!userStory || !language || !llmSelections || !requestId) {
+      return res.status(400).json({ 
+        error: 'Campos obrigatórios: userStory, language, llmSelections, requestId' 
+      });
+    }
+
+    // Preparar payload para AWS Step Functions
+    const stepFunctionPayload = {
+      userStory,
+      language,
+      requestId,
+      // Modelos LLM para cada etapa
+      models: {
+        extractHistory: {
+          family: llmSelections.extractHistory?.family,
+          model: llmSelections.extractHistory?.model
+        },
+        generateCode: {
+          family: llmSelections.generateCode?.family,
+          model: llmSelections.generateCode?.model
+        },
+        generateBDD: {
+          family: llmSelections.generateBDD?.family,
+          model: llmSelections.generateBDD?.model
+        }
+      }
+    };
+
+    // Simular chamada para AWS Step Functions
+    console.log('Enviando para Step Functions:', stepFunctionPayload);
     
-    if (!userStory || userStory.trim() === '') {
-      return NextResponse.json(
-        { error: 'História de usuário é obrigatória' },
-        { status: 400 }
-      );
-    }
+    // Em implementação real, aqui seria:
+    // const stepFunctions = new AWS.StepFunctions();
+    // const execution = await stepFunctions.startExecution({
+    //   stateMachineArn: process.env.STEP_FUNCTION_ARN,
+    //   input: JSON.stringify(stepFunctionPayload)
+    // }).promise();
 
-    if (!language || !['python', 'java'].includes(language)) {
-      return NextResponse.json(
-        { error: 'Linguagem deve ser "python" ou "java"' },
-        { status: 400 }
-      );
-    }
+    // Simular resposta com presigned URL
+    const presignedUrl = `https://temp-storage.s3.amazonaws.com/${requestId}/response.json`;
 
-    // Chamar API Gateway que aciona Step Function com fallback imediato
-    const response = await fetch(`${API_GATEWAY_URL}/generate-code`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.API_KEY || ''}`,
-        'x-api-key': process.env.API_KEY || '',
-      },
-      body: JSON.stringify({
-        userStory: userStory.trim(),
-        language: language,
-        requestId: requestId || crypto.randomUUID(),
-        timestamp: new Date().toISOString(),
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Erro na Step Function' }));
-      throw new Error(errorData.error || `HTTP ${response.status}`);
-    }
-
-    // API Gateway deve retornar presigned URL imediatamente (fallback)
-    const data = await response.json();
-    
-    if (!data.presignedUrl) {
-      throw new Error('Presigned URL não foi fornecida pela API Gateway');
-    }
-
-    // Retornar presigned URL para polling
-    return NextResponse.json({
-      presignedUrl: data.presignedUrl,
-      requestId: data.requestId,
-      status: 'processing',
-      message: 'Step Function iniciada. Use a presigned URL para polling.'
+    return res.status(200).json({
+      success: true,
+      requestId,
+      presignedUrl,
+      selectedModels: stepFunctionPayload.models
     });
 
   } catch (error) {
-    console.error('Erro ao conectar com AWS:', error);
-    
-    return NextResponse.json(
-      { 
-        error: 'Erro interno do servidor ao iniciar geração de código',
-        details: error instanceof Error ? error.message : 'Erro desconhecido'
-      },
-      { status: 500 }
-    );
+    console.error('Erro ao processar requisição:', error);
+    return res.status(500).json({ 
+      error: 'Erro interno do servidor',
+      details: error instanceof Error ? error.message : 'Erro desconhecido'
+    });
   }
 }
 
-export async function GET() {
-  return NextResponse.json(
-    { 
-      message: 'Endpoint para geração de código',
-      version: '3.0.0',
-      status: 'Step Functions + S3 Polling',
-      architecture: 'API Gateway -> Step Function (fallback) -> extract_history -> generate_code -> S3 -> presigned URL',
-      endpoints: {
-        POST: '/api/generate-code - Inicia Step Function e retorna presigned URL para polling'
-      }
+// Função auxiliar para mapear modelos LLM para identificadores AWS Bedrock
+export function mapLLMToBedrockModel(family: string, model: string): string {
+  const modelMap: Record<string, Record<string, string>> = {
+    'amazon-nova': {
+      'micro': 'amazon.nova-micro-v1:0',
+      'little': 'amazon.nova-lite-v1:0', 
+      'pro': 'amazon.nova-pro-v1:0',
+      'premier': 'amazon.nova-premier-v1:0'
     },
-    { status: 200 }
-  );
+    'anthropic-claude': {
+      'haiku-3.5': 'anthropic.claude-3-5-haiku-20241022-v1:0',
+      'sonnet-3.5': 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      'sonnet-3.5v2': 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      'sonnet-3.7': 'anthropic.claude-3-7-sonnet-20250106-v1:0',
+      'sonnet-4': 'anthropic.claude-4-sonnet-20250105-v1:0'
+    }
+  };
+
+  return modelMap[family]?.[model] || 'amazon.nova-pro-v1:0'; // fallback
+}
+
+// Exemplo de uso nas Lambdas
+export function updateLambdaForLLMSelection() {
+  // Em extractHistory.py, seria algo assim:
+  /*
+  def lambda_handler(event, context):
+      # Extrair modelo selecionado
+      selected_model = event.get('models', {}).get('extractHistory', {})
+      family = selected_model.get('family', 'amazon-nova')
+      model = selected_model.get('model', 'pro')
+      
+      # Mapear para identificador Bedrock
+      bedrock_model_id = map_llm_to_bedrock_model(family, model)
+      
+      # Usar o modelo na chamada do Bedrock
+      bedrock_client = boto3.client('bedrock-runtime')
+      response = bedrock_client.invoke_model(
+          modelId=bedrock_model_id,
+          body=json.dumps({
+              "messages": [{"role": "user", "content": prompt}],
+              "max_tokens": 8000,
+              "temperature": 0.1
+          })
+      )
+  */
 }

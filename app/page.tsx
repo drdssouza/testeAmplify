@@ -27,148 +27,42 @@ export default function Home() {
   const [showCodeReference, setShowCodeReference] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // SIMULAÇÃO - Código de exemplo para teste
-  const sampleCodes = {
-    python: `# Código Python Gerado
-class UserManager:
-    def __init__(self):
-        self.users = []
-    
-    def create_user(self, name, email):
-        """Cria um novo usuário"""
-        user = {
-            'id': len(self.users) + 1,
-            'name': name,
-            'email': email,
-            'active': True
+  const steps = [
+    { key: 'upload', label: 'História', icon: DocumentTextIcon },
+    { key: 'code-review', label: 'Revisão', icon: CodeBracketIcon },
+    { key: 'download', label: 'Download', icon: ArrowDownTrayIcon },
+  ];
+
+  // Função para fazer polling no S3
+  const pollS3File = async (presignedUrl: string, maxAttempts = 30, interval = 2000): Promise<string> => {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        setPollingStatus(`Verificando arquivo... (${attempt}/${maxAttempts})`);
+        
+        const response = await fetch(presignedUrl, { method: 'HEAD' });
+        
+        if (response.ok) {
+          // Arquivo existe, fazer download do conteúdo
+          const contentResponse = await fetch(presignedUrl);
+          if (contentResponse.ok) {
+            const content = await contentResponse.text();
+            setPollingStatus('');
+            return content;
+          }
         }
-        self.users.append(user)
-        return user
-    
-    def get_user(self, user_id):
-        """Busca usuário por ID"""
-        for user in self.users:
-            if user['id'] == user_id:
-                return user
-        return None
-    
-    def update_user(self, user_id, name=None, email=None):
-        """Atualiza dados do usuário"""
-        user = self.get_user(user_id)
-        if user:
-            if name:
-                user['name'] = name
-            if email:
-                user['email'] = email
-            return user
-        return None`,
-    
-    java: `// Código Java Gerado
-import java.util.*;
-
-public class UserManager {
-    private List<User> users;
-    
-    public UserManager() {
-        this.users = new ArrayList<>();
-    }
-    
-    public User createUser(String name, String email) {
-        User user = new User(users.size() + 1, name, email);
-        users.add(user);
-        return user;
-    }
-    
-    public User getUser(int userId) {
-        return users.stream()
-                   .filter(user -> user.getId() == userId)
-                   .findFirst()
-                   .orElse(null);
-    }
-    
-    public User updateUser(int userId, String name, String email) {
-        User user = getUser(userId);
-        if (user != null) {
-            if (name != null) user.setName(name);
-            if (email != null) user.setEmail(email);
+        
+        if (attempt < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, interval));
         }
-        return user;
-    }
-}
-
-class User {
-    private int id;
-    private String name;
-    private String email;
-    private boolean active;
-    
-    public User(int id, String name, String email) {
-        this.id = id;
-        this.name = name;
-        this.email = email;
-        this.active = true;
+      } catch (error) {
+        console.error(`Tentativa ${attempt} falhou:`, error);
+        if (attempt < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, interval));
+        }
+      }
     }
     
-    // Getters e Setters
-    public int getId() { return id; }
-    public String getName() { return name; }
-    public void setName(String name) { this.name = name; }
-    public String getEmail() { return email; }
-    public void setEmail(String email) { this.email = email; }
-    public boolean isActive() { return active; }
-    public void setActive(boolean active) { this.active = active; }
-}`
-  };
-
-  const sampleBDD = `Feature: Gerenciamento de Usuários
-  Como um administrador do sistema
-  Eu quero gerenciar usuários
-  Para que eu possa manter o controle de acesso
-
-  Background:
-    Given o sistema de gerenciamento está funcionando
-    And o banco de dados está acessível
-
-  Scenario: Criar novo usuário com sucesso
-    Given eu tenho as informações de um novo usuário
-    When eu envio uma requisição para criar o usuário
-    Then o usuário deve ser criado com sucesso
-    And o usuário deve receber um ID único
-    And o status do usuário deve ser "ativo"
-
-  Scenario: Buscar usuário existente
-    Given existe um usuário no sistema
-    When eu busco o usuário pelo ID
-    Then o sistema deve retornar os dados do usuário
-    And as informações devem estar corretas
-
-  Scenario: Atualizar dados do usuário
-    Given existe um usuário no sistema
-    When eu envio uma requisição para atualizar o usuário
-    Then os dados do usuário devem ser atualizados
-    And o sistema deve confirmar a atualização
-
-  Scenario: Buscar usuário inexistente
-    Given não existe usuário com o ID especificado
-    When eu busco o usuário pelo ID
-    Then o sistema deve retornar null ou erro 404
-    And deve informar que o usuário não foi encontrado`;
-
-  // SIMULAÇÃO - Função para simular API calls
-  const simulatePolling = async (action: string) => {
-    const statuses = [
-      'Iniciando processamento...',
-      'Conectando com AWS Bedrock...',
-      'Processando com IA...',
-      'Finalizando geração...'
-    ];
-    
-    for (let i = 0; i < statuses.length; i++) {
-      setPollingStatus(statuses[i]);
-      await new Promise(resolve => setTimeout(resolve, 800));
-    }
-    
-    setPollingStatus('');
+    throw new Error('Timeout: Arquivo não foi gerado no tempo esperado');
   };
 
   const processFile = (file: File) => {
@@ -226,7 +120,6 @@ class User {
     }
   };
 
-  // SIMULAÇÃO - Gerar código
   const generateCode = async () => {
     const content = uploadedFile ? fileContent : userStory.trim();
     if (!content) {
@@ -241,40 +134,97 @@ class User {
 
     setIsLoading(true);
     setError('');
+    setPollingStatus('Iniciando geração de código...');
     
     try {
-      await simulatePolling('generateCode');
+      // 1. Chamar API Cliente (sem seleção de LLM)
+      const response = await fetch('/api/generate-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          userStory: content, 
+          language: selectedLanguage,
+          requestId: crypto.randomUUID()
+        }),
+      });
+
+      if (!response.ok) throw new Error('Erro ao iniciar geração de código');
+      const data = await response.json();
       
-      const code = sampleCodes[selectedLanguage];
-      setGeneratedCode(code);
-      setEditedCode(code);
+      // 2. API Gateway retorna presigned URL imediatamente
+      const presignedUrl = data.presignedUrl;
+      if (!presignedUrl) {
+        throw new Error('URL de monitoramento não foi fornecida');
+      }
+
+      setPollingStatus('Aguardando processamento...');
+
+      // 3. Fazer polling no S3 até o arquivo estar disponível
+      const codeContent = await pollS3File(presignedUrl);
+      
+      if (!codeContent) {
+        throw new Error('Código não foi gerado');
+      }
+      
+      setGeneratedCode(codeContent);
+      setEditedCode(codeContent);
       setCurrentStep('code-review');
+      setPollingStatus('');
       
     } catch (error) {
-      setError('Erro ao gerar código. Tente novamente.');
+      console.error('Erro na geração:', error);
+      setError(error instanceof Error ? error.message : 'Erro ao gerar código. Tente novamente.');
+      setPollingStatus('');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // SIMULAÇÃO - Gerar BDD
-  const generateBDD = async () => {
-    if (!editedCode.trim()) {
-      setError('Código é necessário para gerar testes BDD');
+  const generateBDDTests = async () => {
+    if (!editedCode) {
+      setError('Código não disponível para geração de testes');
       return;
     }
 
     setIsLoading(true);
     setError('');
-
+    setPollingStatus('Gerando testes BDD...');
+    
     try {
-      await simulatePolling('generateBDD');
+      // Chamar API Cliente BDD
+      const response = await fetch('/api/generate-bdd', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          generatedCode: editedCode,
+          language: selectedLanguage,
+          requestId: crypto.randomUUID()
+        }),
+      });
+
+      if (!response.ok) throw new Error('Erro ao iniciar geração de testes BDD');
+      const data = await response.json();
       
-      setBddTest(sampleBDD);
+      const presignedUrl = data.presignedUrl;
+      if (!presignedUrl) {
+        throw new Error('URL de monitoramento não foi fornecida');
+      }
+
+      // Fazer polling no S3 até o arquivo estar disponível
+      const bddContent = await pollS3File(presignedUrl);
+      
+      if (!bddContent) {
+        throw new Error('Testes BDD não foram gerados');
+      }
+      
+      setBddTest(bddContent);
       setCurrentStep('download');
+      setPollingStatus('');
       
     } catch (error) {
-      setError('Erro ao gerar testes BDD. Tente novamente.');
+      console.error('Erro na geração de BDD:', error);
+      setError(error instanceof Error ? error.message : 'Erro ao gerar testes BDD. Tente novamente.');
+      setPollingStatus('');
     } finally {
       setIsLoading(false);
     }
@@ -297,26 +247,28 @@ class User {
     }
   };
 
-  const downloadZipFiles = () => {
+  const downloadFiles = () => {
     const timestamp = new Date().toISOString().slice(0, 16).replace(/[:-]/g, '');
     const ext = selectedLanguage === 'python' ? 'py' : 'java';
-    const fileName = selectedLanguage === 'python' ? 'generated_code' : 'GeneratedCode';
-    
-    // Download código
+    const fileName = selectedLanguage === 'python' ? 
+      `gerado_${timestamp}.${ext}` : 
+      `Gerado_${timestamp}.${ext}`;
+
+    // Download do código
     const codeBlob = new Blob([editedCode], { type: 'text/plain' });
     const codeUrl = URL.createObjectURL(codeBlob);
     const codeLink = document.createElement('a');
     codeLink.href = codeUrl;
-    codeLink.download = `${fileName}_${timestamp}.${ext}`;
+    codeLink.download = fileName;
     codeLink.click();
     URL.revokeObjectURL(codeUrl);
 
-    // Download BDD
+    // Download dos testes BDD
     const bddBlob = new Blob([bddTest], { type: 'text/plain' });
     const bddUrl = URL.createObjectURL(bddBlob);
     const bddLink = document.createElement('a');
     bddLink.href = bddUrl;
-    bddLink.download = `test_${timestamp}.feature`;
+    bddLink.download = `testes_bdd_${timestamp}.feature`;
     bddLink.click();
     URL.revokeObjectURL(bddUrl);
   };
@@ -326,75 +278,53 @@ class User {
     setUserStory('');
     setUploadedFile(null);
     setFileContent('');
-    setShowFilePreview(false);
-    setIsDragOver(false);
     setSelectedLanguage(null);
     setGeneratedCode('');
     setEditedCode('');
     setBddTest('');
-    setPollingStatus('');
     setError('');
-    setShowCodeReference(false);
+    setPollingStatus('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
-
-  const steps = [
-    { key: 'upload', label: 'História de Usuário', icon: DocumentTextIcon },
-    { key: 'code-review', label: 'Código Gerado', icon: CodeBracketIcon },
-    { key: 'download', label: 'Download', icon: ArrowDownTrayIcon }
-  ];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
-      {/* Header */}
-      <header className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <div className="w-10 h-10 bg-gradient-to-r from-blue-600 to-purple-600 rounded-lg flex items-center justify-center">
-                <CodeBracketIcon className="h-6 w-6 text-white" />
-              </div>
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900">Gerador de Código IA</h1>
-                <p className="text-sm text-gray-600">Powered by AWS & Compass UOL</p>
-              </div>
-            </div>
-            <div className="flex items-center space-x-3 text-sm text-gray-500">
-              <span>Desktop • Compass • AWS</span>
-            </div>
-          </div>
-        </div>
-      </header>
-
       <main className="max-w-7xl mx-auto px-4 py-8">
-        {/* Banner de Teste */}
-        <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-          <div className="flex items-center">
-            <ExclamationTriangleIcon className="h-5 w-5 text-yellow-400 mr-2" />
-            <span className="text-yellow-700 font-medium">🧪 MODO TESTE</span>
-            <span className="text-yellow-600 ml-2">- Simula respostas da API para validação do fluxo</span>
-          </div>
+        {/* Header */}
+        <div className="text-center mb-12">
+          <h1 className="text-4xl font-bold text-gray-900 mb-4">
+            Gerador de Código IA
+          </h1>
+          <p className="text-xl text-gray-600 max-w-3xl mx-auto">
+            Transforme suas histórias de usuário em código funcional Python ou Java com testes BDD automatizados
+          </p>
         </div>
 
         {/* Progress Steps */}
-        <div className="mb-8 flex items-center justify-center space-x-8">
+        <div className="flex justify-center mb-12">
           {steps.map((step, index) => {
-            const Icon = step.icon;
             const isActive = currentStep === step.key;
             const isCompleted = steps.findIndex(s => s.key === currentStep) > index;
-            
+            const Icon = step.icon;
+
             return (
-              <div key={step.key} className="flex flex-col items-center">
-                <div className={`w-12 h-12 rounded-full flex items-center justify-center border-2 ${
-                  isCompleted ? 'bg-green-500 border-green-500' :
-                  isActive ? 'bg-blue-500 border-blue-500' : 'bg-gray-200 border-gray-300'
-                }`}>
-                  <Icon className={`h-6 w-6 ${isCompleted || isActive ? 'text-white' : 'text-gray-400'}`} />
+              <div key={step.key} className="flex items-center">
+                {index > 0 && (
+                  <div className={`w-16 h-0.5 ${isCompleted ? 'bg-green-500' : 'bg-gray-300'}`} />
+                )}
+                <div className="flex flex-col items-center min-w-24">
+                  <div className={`w-12 h-12 rounded-full border-2 flex items-center justify-center ${
+                    isCompleted ? 'bg-green-500 border-green-500' :
+                    isActive ? 'bg-blue-500 border-blue-500' : 'bg-gray-200 border-gray-300'
+                  }`}>
+                    <Icon className={`h-6 w-6 ${isCompleted || isActive ? 'text-white' : 'text-gray-400'}`} />
+                  </div>
+                  <span className={`mt-2 text-sm font-medium ${
+                    isActive ? 'text-blue-600' : isCompleted ? 'text-green-600' : 'text-gray-500'
+                  }`}>
+                    {step.label}
+                  </span>
                 </div>
-                <span className={`mt-2 text-sm font-medium ${
-                  isActive ? 'text-blue-600' : isCompleted ? 'text-green-600' : 'text-gray-500'
-                }`}>
-                  {step.label}
-                </span>
               </div>
             );
           })}
@@ -434,29 +364,34 @@ class User {
                   <div className="text-center">
                     <CloudArrowUpIcon className={`mx-auto h-12 w-12 ${isDragOver ? 'text-blue-500' : 'text-gray-400'}`} />
                     <div className="mt-4">
-                      <button type="button" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
-                        Selecionar Arquivo
-                      </button>
-                      <p className="mt-2 text-sm text-gray-500">ou arraste e solte aqui</p>
-                      <p className="text-xs text-gray-400">Formatos: .txt, .doc, .docx</p>
+                      <span className="text-blue-600 font-medium">Clique para enviar</span>
+                      <span className="text-gray-500"> ou arraste e solte</span>
                     </div>
+                    <p className="text-sm text-gray-500 mt-2">
+                      Formatos suportados: .txt, .doc, .docx (máx: 5MB)
+                    </p>
                   </div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".txt,.doc,.docx"
-                    onChange={handleFileUpload}
-                    className="hidden"
-                  />
                 </div>
 
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  onChange={handleFileUpload}
+                  accept=".txt,.doc,.docx"
+                  className="hidden"
+                />
+
                 {uploadedFile && (
-                  <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                  <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg">
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-2">
-                        <DocumentTextIcon className="h-5 w-5 text-blue-600" />
-                        <span className="text-sm text-blue-700 font-medium">{uploadedFile.name}</span>
-                        <span className="text-xs text-blue-500">({(uploadedFile.size / 1024).toFixed(1)} KB)</span>
+                      <div className="flex items-center space-x-3">
+                        <DocumentTextIcon className="h-6 w-6 text-green-600" />
+                        <div>
+                          <p className="font-medium text-green-800">{uploadedFile.name}</p>
+                          <p className="text-sm text-green-600">
+                            {(uploadedFile.size / 1024).toFixed(1)}KB
+                          </p>
+                        </div>
                       </div>
                       <div className="flex space-x-2">
                         <button
@@ -568,25 +503,29 @@ class User {
                 {selectedLanguage && (
                   <div className="mt-2 text-sm text-green-600 flex items-center">
                     <CheckCircleIcon className="h-4 w-4 mr-1" />
-                    {selectedLanguage === 'python' ? 'Python' : 'Java'} selecionado
+                    {selectedLanguage === 'python' ? 'Python selecionado' : 'Java selecionado'}
                   </div>
                 )}
               </div>
 
-              <button
-                onClick={generateCode}
-                disabled={isLoading || (!userStory.trim() && !uploadedFile) || !selectedLanguage}
-                className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-md hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-              >
-                {isLoading ? (
-                  <div className="flex items-center justify-center">
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                    {pollingStatus || 'Gerando Código...'}
+              <div className="text-center">
+                <button
+                  onClick={generateCode}
+                  disabled={isLoading}
+                  className="px-8 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white font-semibold rounded-lg hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isLoading ? 'Gerando...' : 'Gerar Código'}
+                </button>
+              </div>
+
+              {pollingStatus && (
+                <div className="text-center">
+                  <div className="inline-flex items-center space-x-2 text-blue-600">
+                    <div className="animate-spin h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full"></div>
+                    <span className="text-sm">{pollingStatus}</span>
                   </div>
-                ) : (
-                  'Gerar Código'
-                )}
-              </button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -596,51 +535,47 @@ class User {
           <div className="bg-white rounded-xl shadow-lg p-8">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-2xl font-bold text-gray-900">
-                Código {selectedLanguage === 'python' ? 'Python' : 'Java'} Gerado
+                {selectedLanguage === 'python' ? '🐍' : '☕'} Código {selectedLanguage === 'python' ? 'Python' : 'Java'} Gerado
               </h2>
-              <div className={`px-3 py-1 rounded-full text-sm font-medium ${
-                selectedLanguage === 'python' ? 'bg-blue-100 text-blue-800' : 'bg-orange-100 text-orange-800'
-              }`}>
-                {selectedLanguage === 'python' ? '🐍 Python' : '☕ Java'}
+              <div className="flex space-x-2">
+                <button
+                  onClick={() => copyToClipboard(editedCode)}
+                  className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  <ClipboardDocumentIcon className="h-4 w-4 inline mr-1" />
+                  Copiar
+                </button>
+                <button
+                  onClick={() => setShowCodeReference(!showCodeReference)}
+                  className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  {showCodeReference ? 'Ocultar' : 'Mostrar'} Original
+                </button>
               </div>
             </div>
 
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold">
-                  <PencilSquareIcon className="h-5 w-5 inline mr-2 text-gray-600" />
-                  Editar e Validar Código
-                </h3>
-                <button
-                  onClick={() => copyToClipboard(editedCode)}
-                  className="flex items-center px-3 py-1 border border-gray-300 rounded-md text-sm hover:bg-gray-50"
-                >
-                  <ClipboardDocumentIcon className="h-4 w-4 mr-1" />
-                  Copiar
-                </button>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <PencilSquareIcon className="h-4 w-4 inline mr-1" />
+                  Edite o código se necessário
+                </label>
+                <textarea
+                  value={editedCode}
+                  onChange={(e) => setEditedCode(e.target.value)}
+                  className="w-full h-96 px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:ring-blue-500 focus:border-blue-500"
+                />
               </div>
-              
-              <div className="bg-yellow-50 border border-yellow-200 rounded-md p-3">
-                <p className="text-sm text-yellow-700">
-                  💡 <strong>Dica:</strong> Revise e edite o código antes de gerar os testes BDD. 
-                  Você pode fazer ajustes, correções ou melhorias no código gerado.
-                </p>
-              </div>
-              
-              <textarea
-                value={editedCode}
-                onChange={(e) => setEditedCode(e.target.value)}
-                className="w-full h-80 px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:ring-blue-500 focus:border-blue-500 resize-none"
-                placeholder="Código será gerado aqui..."
-              />
-              
-              <div className="text-sm text-gray-500 flex justify-between">
-                <span>{editedCode.split('\n').length} linhas • {editedCode.length} caracteres</span>
-                <span>Pressione Ctrl+Z para desfazer</span>
-              </div>
+
+              {showCodeReference && (
+                <div className="bg-gray-50 rounded-lg p-4 border">
+                  <h4 className="font-medium text-gray-700 mb-2">Código Original (Referência)</h4>
+                  <pre className="text-sm text-gray-600 whitespace-pre-wrap">{generatedCode}</pre>
+                </div>
+              )}
             </div>
 
-            <div className="flex justify-between mt-8">
+            <div className="flex justify-between mt-6">
               <button
                 onClick={() => setCurrentStep('upload')}
                 className="px-6 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
@@ -648,104 +583,53 @@ class User {
                 Voltar
               </button>
               <button
-                onClick={generateBDD}
-                disabled={isLoading || !editedCode.trim()}
-                className="px-6 py-2 bg-gradient-to-r from-green-600 to-teal-600 text-white rounded-md hover:from-green-700 hover:to-teal-700 disabled:opacity-50"
+                onClick={generateBDDTests}
+                disabled={isLoading}
+                className="px-6 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-md hover:from-blue-700 hover:to-purple-700 disabled:opacity-50"
               >
-                {isLoading ? (
-                  <div className="flex items-center">
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                    {pollingStatus || 'Gerando Testes...'}
-                  </div>
-                ) : (
-                  'Validar e Gerar Testes BDD'
-                )}
+                {isLoading ? 'Gerando...' : 'Gerar Testes BDD'}
               </button>
             </div>
+
+            {pollingStatus && (
+              <div className="text-center mt-4">
+                <div className="inline-flex items-center space-x-2 text-blue-600">
+                  <div className="animate-spin h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full"></div>
+                  <span className="text-sm">{pollingStatus}</span>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {/* Download Step */}
         {currentStep === 'download' && (
           <div className="bg-white rounded-xl shadow-lg p-8">
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Testes BDD Gerados</h2>
-            
-            <div className="space-y-6">
-              {/* Código de Referência - Retraível */}
-              <div className="border rounded-lg">
-                <div 
-                  className="flex items-center justify-between p-4 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
-                  onClick={() => setShowCodeReference(!showCodeReference)}
-                >
-                  <div className="flex items-center space-x-3">
-                    <div className={`px-2 py-1 rounded text-xs font-medium ${
-                      selectedLanguage === 'python' ? 'bg-blue-100 text-blue-800' : 'bg-orange-100 text-orange-800'
-                    }`}>
-                      {selectedLanguage === 'python' ? '🐍 Python' : '☕ Java'}
-                    </div>
-                    <h3 className="text-lg font-semibold text-gray-700">
-                      Código de Referência Utilizado
-                    </h3>
-                  </div>
-                  <div className="flex items-center text-sm text-gray-500">
-                    <span className="mr-2">{showCodeReference ? 'Retrair' : 'Expandir'}</span>
-                    <div className={`transform transition-transform ${showCodeReference ? 'rotate-180' : ''}`}>
-                      ↓
-                    </div>
-                  </div>
-                </div>
-                
-                {showCodeReference && (
-                  <div className="p-4 border-t">
-                    <div className="bg-gray-50 rounded p-3 max-h-60 overflow-y-auto">
-                      <pre className="text-sm text-gray-700 font-mono">{editedCode}</pre>
-                    </div>
-                    <div className="mt-2 text-xs text-gray-500 flex justify-between">
-                      <span>{editedCode.split('\n').length} linhas</span>
-                      <button
-                        onClick={() => copyToClipboard(editedCode)}
-                        className="text-blue-600 hover:text-blue-800"
-                      >
-                        Copiar código
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
+            <div className="text-center mb-6">
+              <CheckCircleIcon className="h-16 w-16 text-green-500 mx-auto mb-4" />
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Arquivos Prontos!</h2>
+              <p className="text-gray-600">Seu código e testes BDD foram gerados com sucesso</p>
+            </div>
 
-              {/* Testes BDD Completos */}
-              <div className="border rounded-lg">
-                <div className="p-4 bg-green-50 border-b">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold text-green-800 flex items-center">
-                      🧪 Testes BDD Gerados
-                      <span className="ml-2 px-2 py-1 bg-green-200 text-green-700 text-xs rounded-full">
-                        Gherkin
-                      </span>
-                    </h3>
-                    <button
-                      onClick={() => copyToClipboard(bddTest)}
-                      className="flex items-center px-3 py-1 border border-green-300 rounded-md text-sm text-green-700 hover:bg-green-100"
-                    >
-                      <ClipboardDocumentIcon className="h-4 w-4 mr-1" />
-                      Copiar BDD
-                    </button>
-                  </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+              <div className="border rounded-lg p-4">
+                <h3 className="text-lg font-semibold mb-2">
+                  {selectedLanguage === 'python' ? '🐍' : '☕'} Código {selectedLanguage === 'python' ? 'Python' : 'Java'}
+                </h3>
+                <div className="bg-gray-50 rounded p-3 h-32 overflow-y-auto">
+                  <pre className="text-xs text-gray-600">{editedCode.substring(0, 200)}...</pre>
                 </div>
-                
-                <div className="p-4">
-                  <div className="bg-gray-50 rounded p-4 max-h-96 overflow-y-auto">
-                    <pre className="text-sm text-gray-700 font-mono whitespace-pre-wrap">{bddTest}</pre>
-                  </div>
-                  <div className="mt-3 text-xs text-gray-500 flex justify-between">
-                    <span>{bddTest.split('\n').length} linhas • {bddTest.length} caracteres</span>
-                    <span>Formato: Cucumber/Gherkin (.feature)</span>
-                  </div>
+              </div>
+              
+              <div className="border rounded-lg p-4">
+                <h3 className="text-lg font-semibold mb-2">🧪 Testes BDD</h3>
+                <div className="bg-gray-50 rounded p-3 h-32 overflow-y-auto">
+                  <pre className="text-xs text-gray-600">{bddTest.substring(0, 200)}...</pre>
                 </div>
               </div>
             </div>
 
-            <div className="flex justify-between mt-8">
+            <div className="flex justify-between">
               <button
                 onClick={resetFlow}
                 className="px-6 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
@@ -753,7 +637,7 @@ class User {
                 Nova Geração
               </button>
               <button
-                onClick={downloadZipFiles}
+                onClick={downloadFiles}
                 className="flex items-center px-6 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-md hover:from-blue-700 hover:to-purple-700"
               >
                 <ArrowDownTrayIcon className="h-4 w-4 mr-2" />

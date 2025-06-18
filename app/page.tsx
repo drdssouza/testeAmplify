@@ -15,9 +15,10 @@ export default function Home() {
   const [userStory, setUserStory] = useState('');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [fileContent, setFileContent] = useState('');
+  const [uploadedContextFile, setUploadedContextFile] = useState<File | null>(null);
+  const [contextFileContent, setContextFileContent] = useState('');
   const [showFilePreview, setShowFilePreview] = useState(false);
-  const [isDragOver, setIsDragOver] = useState(false);
-  const [selectedLanguage, setSelectedLanguage] = useState<CodeLanguage | null>(null); // Mudança aqui: permite null
+  const [selectedLanguage, setSelectedLanguage] = useState<CodeLanguage | null>(null);
   const [generatedCode, setGeneratedCode] = useState('');
   const [editedCode, setEditedCode] = useState('');
   const [bddTest, setBddTest] = useState('');
@@ -25,8 +26,8 @@ export default function Home() {
   const [pollingStatus, setPollingStatus] = useState('');
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const contextFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Função para fazer polling no S3
   const pollS3File = async (presignedUrl: string, maxAttempts = 30, interval = 2000): Promise<string> => {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -35,7 +36,6 @@ export default function Home() {
         const response = await fetch(presignedUrl, { method: 'HEAD' });
         
         if (response.ok) {
-          // Arquivo existe, fazer download do conteúdo
           const contentResponse = await fetch(presignedUrl);
           if (contentResponse.ok) {
             const content = await contentResponse.text();
@@ -58,7 +58,7 @@ export default function Home() {
     throw new Error('Timeout: Arquivo não foi gerado no tempo esperado');
   };
 
-  const processFile = (file: File) => {
+  const processFile = (file: File, type: 'story' | 'context') => {
     const allowedTypes = ['.txt', '.doc', '.docx'];
     const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
     
@@ -71,7 +71,11 @@ export default function Home() {
       return;
     }
 
-    setUploadedFile(file);
+    if (type === 'story') {
+      setUploadedFile(file);
+    } else {
+      setUploadedContextFile(file);
+    }
     setError('');
     
     const reader = new FileReader();
@@ -81,36 +85,26 @@ export default function Home() {
         setError('Conteúdo muito extenso (máx: 100k caracteres)');
         return;
       }
-      setFileContent(content);
+      if (type === 'story') {
+        setFileContent(content);
+      } else {
+        setContextFileContent(content);
+      }
     };
     reader.onerror = () => setError('Erro ao ler arquivo');
     reader.readAsText(file);
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'story' | 'context') => {
     const file = e.target.files?.[0];
-    if (file) processFile(file);
+    if (file) processFile(file, type);
   };
 
-  const handleDrag = (e: React.DragEvent, type: 'over' | 'leave' | 'drop') => {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    if (type === 'over') setIsDragOver(true);
-    else if (type === 'leave') setIsDragOver(false);
-    else if (type === 'drop') {
-      setIsDragOver(false);
-      const file = e.dataTransfer.files[0];
-      if (file) processFile(file);
-    }
-  };
-
-  // Função para alternar seleção de linguagem
   const toggleLanguageSelection = (language: CodeLanguage) => {
     if (selectedLanguage === language) {
-      setSelectedLanguage(null); // Deseleciona se clicar na mesma
+      setSelectedLanguage(null);
     } else {
-      setSelectedLanguage(language); // Seleciona a nova linguagem
+      setSelectedLanguage(language);
     }
   };
 
@@ -126,23 +120,18 @@ export default function Home() {
       return;
     }
 
-    if (!selectedLanguage) {
-      setError('Selecione uma linguagem de programação');
-      return;
-    }
-
     setIsLoading(true);
     setError('');
     setPollingStatus('Iniciando geração de código...');
     
     try {
-      // 1. Chamar API Gateway que aciona Step Function (com fallback imediato)
       const response = await fetch('/api/generate-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           userStory: content, 
           language: selectedLanguage,
+          contexto: contextFileContent.trim(),
           requestId: crypto.randomUUID()
         }),
       });
@@ -150,7 +139,6 @@ export default function Home() {
       if (!response.ok) throw new Error('Erro ao iniciar geração de código');
       const data = await response.json();
       
-      // 2. API Gateway retorna presigned URL imediatamente
       const presignedUrl = data.presignedUrl;
       if (!presignedUrl) {
         throw new Error('URL de monitoramento não foi fornecida');
@@ -158,7 +146,6 @@ export default function Home() {
 
       setPollingStatus('Aguardando processamento...');
 
-      // 3. Fazer polling no S3 até o arquivo estar disponível
       const generatedContent = await pollS3File(presignedUrl);
       
       if (!generatedContent) {
@@ -190,7 +177,6 @@ export default function Home() {
     setPollingStatus('Iniciando geração de testes BDD...');
 
     try {
-      // 1. Chamar API Gateway que aciona Step Function (com fallback imediato)
       const response = await fetch('/api/generate-bdd', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -204,7 +190,6 @@ export default function Home() {
       if (!response.ok) throw new Error('Erro ao iniciar geração de testes BDD');
       const data = await response.json();
       
-      // 2. API Gateway retorna presigned URL imediatamente
       const presignedUrl = data.presignedUrl;
       if (!presignedUrl) {
         throw new Error('URL de monitoramento não foi fornecida');
@@ -212,7 +197,6 @@ export default function Home() {
 
       setPollingStatus('Aguardando processamento...');
 
-      // 3. Fazer polling no S3 até o arquivo estar disponível
       const bddContent = await pollS3File(presignedUrl);
       
       if (!bddContent) {
@@ -254,7 +238,6 @@ export default function Home() {
     const ext = selectedLanguage === 'python' ? 'py' : 'java';
     const fileName = selectedLanguage === 'python' ? 'generated_code' : 'GeneratedCode';
     
-    // Download código
     const codeBlob = new Blob([editedCode], { type: 'text/plain' });
     const codeUrl = URL.createObjectURL(codeBlob);
     const codeLink = document.createElement('a');
@@ -263,7 +246,6 @@ export default function Home() {
     codeLink.click();
     URL.revokeObjectURL(codeUrl);
 
-    // Download BDD
     const bddBlob = new Blob([bddTest], { type: 'text/plain' });
     const bddUrl = URL.createObjectURL(bddBlob);
     const bddLink = document.createElement('a');
@@ -278,9 +260,10 @@ export default function Home() {
     setUserStory('');
     setUploadedFile(null);
     setFileContent('');
+    setUploadedContextFile(null);
+    setContextFileContent('');
     setShowFilePreview(false);
-    setIsDragOver(false);
-    setSelectedLanguage(null); // Reset para null
+    setSelectedLanguage(null);
     setGeneratedCode('');
     setEditedCode('');
     setBddTest('');
@@ -296,7 +279,6 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
-      {/* Header */}
       <header className="bg-white shadow-sm border-b">
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
@@ -317,7 +299,6 @@ export default function Home() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
-        {/* Progress Steps */}
         <div className="mb-8 flex items-center justify-center space-x-8">
           {steps.map((step, index) => {
             const Icon = step.icon;
@@ -342,7 +323,6 @@ export default function Home() {
           })}
         </div>
 
-        {/* Error Alert */}
         {error && (
           <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4">
             <div className="flex items-center">
@@ -352,66 +332,115 @@ export default function Home() {
           </div>
         )}
 
-        {/* Upload Step */}
         {currentStep === 'upload' && (
           <div className="bg-white rounded-xl shadow-lg p-8">
             <h2 className="text-2xl font-bold text-gray-900 mb-6">História de Usuário</h2>
             
             <div className="space-y-6">
-              {/* File Upload */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Upload de arquivo ou digite diretamente
-                </label>
-                
-                <div 
-                  className={`border-2 border-dashed rounded-lg p-6 transition-all cursor-pointer ${
-                    isDragOver ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-blue-400'
-                  }`}
-                  onClick={() => fileInputRef.current?.click()}
-                  onDragOver={(e) => handleDrag(e, 'over')}
-                  onDragLeave={(e) => handleDrag(e, 'leave')}
-                  onDrop={(e) => handleDrag(e, 'drop')}
-                >
-                  <div className="text-center">
-                    <CloudArrowUpIcon className={`mx-auto h-12 w-12 ${isDragOver ? 'text-blue-500' : 'text-gray-400'}`} />
-                    <div className="mt-4">
-                      <button type="button" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
-                        Selecionar Arquivo
-                      </button>
-                      <p className="mt-2 text-sm text-gray-500">ou arraste e solte aqui</p>
-                      <p className="text-xs text-gray-400">Formatos: .txt, .doc, .docx</p>
+              {/* Campos lado a lado */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* História de Usuário */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    História de Usuário
+                  </label>
+                  
+                  <div 
+                    className="border-2 border-dashed rounded-lg p-6 transition-all cursor-pointer border-gray-300 hover:border-blue-400"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <div className="text-center">
+                      <CloudArrowUpIcon className="mx-auto h-12 w-12 text-gray-400" />
+                      <div className="mt-4">
+                        <button type="button" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                          Selecionar Arquivo
+                        </button>
+                        <p className="mt-2 text-sm text-gray-500">ou arraste e solte aqui</p>
+                        <p className="text-xs text-gray-400">Formatos: .txt, .doc, .docx</p>
+                      </div>
                     </div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".txt,.doc,.docx"
+                      onChange={(e) => handleFileUpload(e, 'story')}
+                      className="hidden"
+                    />
                   </div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".txt,.doc,.docx"
-                    onChange={handleFileUpload}
-                    className="hidden"
-                  />
+
+                  {uploadedFile && (
+                    <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <DocumentTextIcon className="h-5 w-5 text-blue-600" />
+                          <span className="text-sm text-blue-700 font-medium">{uploadedFile.name}</span>
+                          <span className="text-xs text-blue-500">({(uploadedFile.size / 1024).toFixed(1)} KB)</span>
+                        </div>
+                        <div className="flex space-x-2">
+                          <button
+                            onClick={() => setShowFilePreview(true)}
+                            className="px-2 py-1 text-xs text-blue-600 bg-blue-100 rounded hover:bg-blue-200"
+                          >
+                            <EyeIcon className="h-3 w-3 inline mr-1" />Visualizar
+                          </button>
+                          <button
+                            onClick={() => {
+                              setUploadedFile(null);
+                              setFileContent('');
+                              if (fileInputRef.current) fileInputRef.current.value = '';
+                            }}
+                            className="text-xs text-blue-600 underline hover:text-blue-800"
+                          >
+                            Remover
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                {uploadedFile && (
-                  <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-md">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-2">
-                        <DocumentTextIcon className="h-5 w-5 text-blue-600" />
-                        <span className="text-sm text-blue-700 font-medium">{uploadedFile.name}</span>
-                        <span className="text-xs text-blue-500">({(uploadedFile.size / 1024).toFixed(1)} KB)</span>
-                      </div>
-                      <div className="flex space-x-2">
-                        <button
-                          onClick={() => setShowFilePreview(true)}
-                          className="px-2 py-1 text-xs text-blue-600 bg-blue-100 rounded hover:bg-blue-200"
-                        >
-                          <EyeIcon className="h-3 w-3 inline mr-1" />Visualizar
+                {/* Contexto e Padronização */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Contexto e Padronização
+                  </label>
+                  
+                  <div 
+                    className="border-2 border-dashed rounded-lg p-6 transition-all cursor-pointer border-gray-300 hover:border-blue-400"
+                    onClick={() => contextFileInputRef.current?.click()}
+                  >
+                    <div className="text-center">
+                      <CloudArrowUpIcon className="mx-auto h-12 w-12 text-gray-400" />
+                      <div className="mt-4">
+                        <button type="button" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                          Selecionar Arquivo
                         </button>
+                        <p className="mt-2 text-sm text-gray-500">ou arraste e solte aqui</p>
+                        <p className="text-xs text-gray-400">Formatos: .txt, .doc, .docx</p>
+                      </div>
+                    </div>
+                    <input
+                      ref={contextFileInputRef}
+                      type="file"
+                      accept=".txt,.doc,.docx"
+                      onChange={(e) => handleFileUpload(e, 'context')}
+                      className="hidden"
+                    />
+                  </div>
+
+                  {uploadedContextFile && (
+                    <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <DocumentTextIcon className="h-5 w-5 text-blue-600" />
+                          <span className="text-sm text-blue-700 font-medium">{uploadedContextFile.name}</span>
+                          <span className="text-xs text-blue-500">({(uploadedContextFile.size / 1024).toFixed(1)} KB)</span>
+                        </div>
                         <button
                           onClick={() => {
-                            setUploadedFile(null);
-                            setFileContent('');
-                            if (fileInputRef.current) fileInputRef.current.value = '';
+                            setUploadedContextFile(null);
+                            setContextFileContent('');
+                            if (contextFileInputRef.current) contextFileInputRef.current.value = '';
                           }}
                           className="text-xs text-blue-600 underline hover:text-blue-800"
                         >
@@ -419,10 +448,11 @@ export default function Home() {
                         </button>
                       </div>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
 
+              {/* Campo de digitação ocupando toda a largura */}
               <div className="relative">
                 <div className="absolute inset-0 flex items-center">
                   <div className="w-full border-t border-gray-300" />
@@ -432,7 +462,6 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Text Area */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Digite sua história de usuário</label>
                 <textarea
@@ -450,7 +479,6 @@ export default function Home() {
                 />
               </div>
 
-              {/* Language Selection - CORRIGIDO */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-3">
                   Escolha a linguagem <span className="text-red-500">*</span>
@@ -476,7 +504,6 @@ export default function Home() {
                       </div>
                       <div>
                         <div className="font-medium">🐍 Python</div>
-                        <div className="text-xs text-gray-500">Ideal para prototipagem e IA</div>
                       </div>
                     </div>
                   </div>
@@ -501,7 +528,6 @@ export default function Home() {
                       </div>
                       <div>
                         <div className="font-medium">☕ Java</div>
-                        <div className="text-xs text-gray-500">Ideal para aplicações enterprise</div>
                       </div>
                     </div>
                   </div>
@@ -533,7 +559,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Code Review Step */}
         {currentStep === 'code-review' && (
           <div className="bg-white rounded-xl shadow-lg p-8">
             <div className="flex items-center justify-between mb-6">
@@ -592,7 +617,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Download Step */}
         {currentStep === 'download' && (
           <div className="bg-white rounded-xl shadow-lg p-8">
             <h2 className="text-2xl font-bold text-gray-900 mb-6">Arquivos Gerados</h2>
@@ -633,7 +657,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* File Preview Modal */}
         {showFilePreview && uploadedFile && (
           <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[80vh] flex flex-col">
@@ -675,7 +698,6 @@ export default function Home() {
         )}
       </main>
 
-      {/* Footer */}
       <footer className="bg-white border-t mt-16">
         <div className="max-w-7xl mx-auto px-4 py-8">
           <div className="text-center text-gray-500 text-sm">

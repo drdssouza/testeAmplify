@@ -153,7 +153,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Gerar URL presignada para polling (baseada no padrão esperado)
-    const presignedUrl = `https://${S3_BUCKET_NAME}.s3.${S3_REGION}.amazonaws.com/${requestId}/result.json`;
+    const presignedUrl = `https://${S3_BUCKET_NAME}.s3.${S3_REGION}.amazonaws.com/${requestId}/generated-code.${language}`;
 
     // Retornar resposta para o frontend
     return NextResponse.json({

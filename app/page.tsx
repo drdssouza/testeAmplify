@@ -102,15 +102,16 @@ export default function Home() {
   const pollS3File = async (presignedUrl: string): Promise<string> => {
     console.log('🔍 Iniciando polling:', { presignedUrl });
     
-    // Buscar configurações de polling da API
-    let maxAttempts = 30;
-    let interval = 2000;
+    // Configurações aumentadas para mais tempo
+    let maxAttempts = 90; // 90 tentativas = ~3 minutos
+    let interval = 2000;  // 2 segundos
     
     try {
       const configResponse = await fetch('/api/generate-code', { method: 'GET' });
       if (configResponse.ok) {
         const config = await configResponse.json();
-        maxAttempts = config.polling?.maxAttempts || 30;
+        // Aumentar os valores padrão se necessário
+        maxAttempts = Math.max(config.polling?.maxAttempts || 90, 90);
         interval = config.polling?.intervalMs || 2000;
         console.log('📊 Configurações de polling:', { maxAttempts, interval });
       }
@@ -118,15 +119,22 @@ export default function Home() {
       console.warn('⚠️ Usando configurações padrão de polling');
     }
     
+    // Status mais amigável sem contador
+    setPollingStatus('🤖 Gerando código... Isso pode levar alguns minutos.');
+    
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        setPollingStatus(`Verificando arquivo... (${attempt}/${maxAttempts})`);
+        // Log interno apenas (não mostrar para usuário)
+        console.log(`🔄 Tentativa ${attempt}/${maxAttempts}`);
         
         // Primeiro, verificar se o arquivo existe (HEAD request)
         const headResponse = await fetch(presignedUrl, { method: 'HEAD' });
         
         if (headResponse.ok) {
           console.log(`📋 Arquivo encontrado na tentativa ${attempt}`);
+          
+          // Atualizar status para download
+          setPollingStatus('📥 Código gerado! Baixando resultado...');
           
           // Arquivo existe, fazer download
           const contentResponse = await fetch(presignedUrl);
@@ -140,6 +148,12 @@ export default function Home() {
           }
         } else {
           console.log(`⏳ Tentativa ${attempt}: arquivo ainda não existe (${headResponse.status})`);
+        }
+        
+        // Atualizar mensagem de progresso baseada no tempo
+        if (attempt % 15 === 0) { // A cada 30 segundos
+          const timeElapsed = Math.floor((attempt * interval) / 1000);
+          setPollingStatus(`🤖 Gerando código... (${timeElapsed}s decorridos)`);
         }
         
         if (attempt < maxAttempts) {
@@ -157,7 +171,7 @@ export default function Home() {
     
     console.error('⚠️ Timeout: arquivo não foi gerado no tempo esperado');
     setPollingStatus('');
-    throw new Error('Timeout: Arquivo não foi gerado no tempo esperado');
+    throw new Error('⏱️ Timeout: O processamento está demorando mais que o esperado. Tente novamente.');
   };
 
   const processFile = (file: File, type: 'story' | 'context') => {

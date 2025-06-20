@@ -28,33 +28,135 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const contextFileInputRef = useRef<HTMLInputElement>(null);
 
-  const pollS3File = async (presignedUrl: string, maxAttempts = 30, interval = 2000): Promise<string> => {
+  // Função para converter arquivo para base64
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        // Remove "data:type/subtype;base64," prefix
+        const base64 = (reader.result as string).split(',')[1];
+        resolve(base64);
+      };
+      reader.onerror = error => reject(error);
+    });
+  };
+
+  // Função de validação de arquivo atualizada
+  const validateFile = async (file: File): Promise<{ valid: boolean; error?: string }> => {
+    try {
+      // Buscar configurações da API
+      const configResponse = await fetch('/api/generate-code', { method: 'GET' });
+      const config = configResponse.ok ? await configResponse.json() : null;
+      
+      const maxSizeMB = config?.configuration?.maxFileSize ? 
+        parseInt(config.configuration.maxFileSize.replace('MB', '')) : 5;
+      const supportedTypes = config?.configuration?.supportedFileTypes || 
+        ['.txt', '.doc', '.docx', '.pdf'];
+      
+      const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
+      const fileSizeMB = file.size / (1024 * 1024);
+      
+      if (!supportedTypes.includes(fileExtension)) {
+        return {
+          valid: false,
+          error: `Formato não suportado. Use: ${supportedTypes.join(', ')}`
+        };
+      }
+      
+      if (fileSizeMB > maxSizeMB) {
+        return {
+          valid: false,
+          error: `Arquivo muito grande (máx: ${maxSizeMB}MB)`
+        };
+      }
+      
+      return { valid: true };
+      
+    } catch (error) {
+      console.warn('⚠️ Erro ao validar arquivo, usando validação padrão');
+      
+      // Fallback para validação padrão
+      const allowedTypes = ['.txt', '.doc', '.docx', '.pdf'];
+      const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
+      
+      if (!allowedTypes.includes(fileExtension)) {
+        return {
+          valid: false,
+          error: 'Formato não suportado. Use .txt, .doc, .docx ou .pdf'
+        };
+      }
+      
+      if (file.size > 5 * 1024 * 1024) {
+        return {
+          valid: false,
+          error: 'Arquivo muito grande (máx: 5MB)'
+        };
+      }
+      
+      return { valid: true };
+    }
+  };
+
+  // Função pollS3File atualizada com configuração dinâmica
+  const pollS3File = async (presignedUrl: string): Promise<string> => {
+    console.log('🔍 Iniciando polling:', { presignedUrl });
+    
+    // Buscar configurações de polling da API
+    let maxAttempts = 30;
+    let interval = 2000;
+    
+    try {
+      const configResponse = await fetch('/api/generate-code', { method: 'GET' });
+      if (configResponse.ok) {
+        const config = await configResponse.json();
+        maxAttempts = config.polling?.maxAttempts || 30;
+        interval = config.polling?.intervalMs || 2000;
+        console.log('📊 Configurações de polling:', { maxAttempts, interval });
+      }
+    } catch (error) {
+      console.warn('⚠️ Usando configurações padrão de polling');
+    }
+    
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         setPollingStatus(`Verificando arquivo... (${attempt}/${maxAttempts})`);
         
-        const response = await fetch(presignedUrl, { method: 'HEAD' });
+        // Primeiro, verificar se o arquivo existe (HEAD request)
+        const headResponse = await fetch(presignedUrl, { method: 'HEAD' });
         
-        if (response.ok) {
+        if (headResponse.ok) {
+          console.log(`📋 Arquivo encontrado na tentativa ${attempt}`);
+          
+          // Arquivo existe, fazer download
           const contentResponse = await fetch(presignedUrl);
           if (contentResponse.ok) {
             const content = await contentResponse.text();
+            console.log(`✅ Conteúdo baixado: ${content.length} caracteres`);
             setPollingStatus('');
             return content;
+          } else {
+            console.log(`⚠️ Erro ao baixar conteúdo: ${contentResponse.status}`);
           }
+        } else {
+          console.log(`⏳ Tentativa ${attempt}: arquivo ainda não existe (${headResponse.status})`);
         }
         
         if (attempt < maxAttempts) {
+          console.log(`⌛ Aguardando ${interval}ms antes da próxima tentativa...`);
           await new Promise(resolve => setTimeout(resolve, interval));
         }
+        
       } catch (error) {
-        console.error(`Tentativa ${attempt} falhou:`, error);
+        console.error(`❌ Erro na tentativa ${attempt}:`, error);
         if (attempt < maxAttempts) {
           await new Promise(resolve => setTimeout(resolve, interval));
         }
       }
     }
     
+    console.error('⚠️ Timeout: arquivo não foi gerado no tempo esperado');
+    setPollingStatus('');
     throw new Error('Timeout: Arquivo não foi gerado no tempo esperado');
   };
 
@@ -108,6 +210,7 @@ export default function Home() {
     }
   };
 
+  // Função generateCode atualizada para usar validações e configurações dinâmicas
   const generateCode = async () => {
     const content = uploadedFile ? fileContent : userStory.trim();
     if (!content) {
@@ -120,45 +223,151 @@ export default function Home() {
       return;
     }
 
+    // Validar arquivo se estiver usando upload
+    if (uploadedFile) {
+      const validation = await validateFile(uploadedFile);
+      if (!validation.valid) {
+        setError(validation.error || 'Arquivo inválido');
+        return;
+      }
+    }
+
     setIsLoading(true);
     setError('');
     setPollingStatus('Iniciando geração de código...');
     
     try {
+      const requestId = crypto.randomUUID();
+      
+      // Preparar payload baseado se tem arquivo ou não
+      let requestPayload: any = {
+        language: selectedLanguage,
+        requestId: requestId
+      };
+
+      if (uploadedFile) {
+        // Modo arquivo: enviar arquivos em base64
+        console.log('📁 Enviando arquivo:', uploadedFile.name);
+        
+        const files = [];
+        
+        // Arquivo principal (história)
+        const mainFileBase64 = await fileToBase64(uploadedFile);
+        files.push({
+          name: uploadedFile.name,
+          type: uploadedFile.type || 'text/plain',
+          content: mainFileBase64
+        });
+
+        // Arquivo de contexto (se existir)
+        if (uploadedContextFile && contextFileContent.trim()) {
+          console.log('📄 Incluindo arquivo de contexto:', uploadedContextFile.name);
+          
+          // Validar arquivo de contexto também
+          const contextValidation = await validateFile(uploadedContextFile);
+          if (!contextValidation.valid) {
+            setError(`Arquivo de contexto: ${contextValidation.error}`);
+            return;
+          }
+          
+          const contextFileBase64 = await fileToBase64(uploadedContextFile);
+          files.push({
+            name: uploadedContextFile.name,
+            type: uploadedContextFile.type || 'text/plain',
+            content: contextFileBase64
+          });
+        }
+
+        requestPayload = {
+          ...requestPayload,
+          inputType: "file",
+          files: files,
+          userStory: "", // Vazio quando enviando arquivos
+          contexto: contextFileContent.trim() // Info adicional de contexto
+        };
+
+      } else {
+        // Modo texto: enviar texto direto
+        console.log('📝 Enviando texto direto');
+        
+        requestPayload = {
+          ...requestPayload,
+          inputType: "text", 
+          userStory: content,
+          contexto: contextFileContent.trim()
+        };
+      }
+
+      console.log('🚀 Payload preparado:', {
+        ...requestPayload,
+        files: requestPayload.files ? `${requestPayload.files.length} arquivo(s)` : 'N/A'
+      });
+
+      // Chamar API interna do Next.js
       const response = await fetch('/api/generate-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          userStory: content, 
-          language: selectedLanguage,
-          contexto: contextFileContent.trim(),
-          requestId: crypto.randomUUID()
-        }),
+        body: JSON.stringify(requestPayload),
       });
 
-      if (!response.ok) throw new Error('Erro ao iniciar geração de código');
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+      }
+
       const data = await response.json();
+      console.log('✅ Resposta da API:', data);
       
+      if (!data.success) {
+        throw new Error(data.error || 'Falha na geração de código');
+      }
+
       const presignedUrl = data.presignedUrl;
       if (!presignedUrl) {
         throw new Error('URL de monitoramento não foi fornecida');
       }
 
       setPollingStatus('Aguardando processamento...');
+      console.log('🔄 Iniciando polling:', presignedUrl);
 
+      // Fazer polling do resultado (agora com configurações dinâmicas)
       const generatedContent = await pollS3File(presignedUrl);
       
       if (!generatedContent) {
         throw new Error('Código não foi gerado');
       }
       
-      setGeneratedCode(generatedContent);
-      setEditedCode(generatedContent);
+      // Tentar parsear o resultado como JSON
+      let parsedResult;
+      try {
+        parsedResult = JSON.parse(generatedContent);
+        
+        // Se o resultado tem estrutura específica, extrair o código
+        if (parsedResult.generatedCode || parsedResult.code) {
+          setGeneratedCode(parsedResult.generatedCode || parsedResult.code);
+          setEditedCode(parsedResult.generatedCode || parsedResult.code);
+        } else if (typeof parsedResult === 'string') {
+          setGeneratedCode(parsedResult);
+          setEditedCode(parsedResult);
+        } else {
+          // Fallback: usar o JSON como string
+          setGeneratedCode(JSON.stringify(parsedResult, null, 2));
+          setEditedCode(JSON.stringify(parsedResult, null, 2));
+        }
+        
+      } catch (parseError) {
+        // Se não for JSON válido, usar o conteúdo como texto
+        console.log('📄 Resultado não é JSON, usando como texto');
+        setGeneratedCode(generatedContent);
+        setEditedCode(generatedContent);
+      }
+      
       setCurrentStep('code-review');
       setPollingStatus('');
+      console.log('🎉 Código gerado com sucesso!');
       
     } catch (error) {
-      console.error('Erro na geração:', error);
+      console.error('💥 Erro na geração:', error);
       setError(error instanceof Error ? error.message : 'Erro ao gerar código. Tente novamente.');
       setPollingStatus('');
     } finally {
@@ -174,7 +383,7 @@ export default function Home() {
 
     setIsLoading(true);
     setError('');
-    setPollingStatus('Iniciando geração de testes BDD...');
+    setPollingStatus('Gerando testes BDD...');
 
     try {
       const response = await fetch('/api/generate-bdd', {
@@ -187,7 +396,7 @@ export default function Home() {
         }),
       });
 
-      if (!response.ok) throw new Error('Erro ao iniciar geração de testes BDD');
+      if (!response.ok) throw new Error('Erro ao gerar testes BDD');
       const data = await response.json();
       
       const presignedUrl = data.presignedUrl;
@@ -195,14 +404,7 @@ export default function Home() {
         throw new Error('URL de monitoramento não foi fornecida');
       }
 
-      setPollingStatus('Aguardando processamento...');
-
       const bddContent = await pollS3File(presignedUrl);
-      
-      if (!bddContent) {
-        throw new Error('Testes BDD não foram gerados');
-      }
-      
       setBddTest(bddContent);
       setCurrentStep('download');
       setPollingStatus('');
@@ -216,25 +418,8 @@ export default function Home() {
     }
   };
 
-  const copyToClipboard = async (text: string) => {
-    try {
-      if (navigator.clipboard) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const textArea = document.createElement('textarea');
-        textArea.value = text;
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-      }
-    } catch (error) {
-      console.error('Erro ao copiar:', error);
-    }
-  };
-
   const downloadFiles = () => {
-    const timestamp = new Date().toISOString().slice(0, 16).replace(/[:-]/g, '');
+    const timestamp = new Date().toISOString().split('T')[0];
     const ext = selectedLanguage === 'python' ? 'py' : 'java';
     const fileName = selectedLanguage === 'python' ? 'generated_code' : 'GeneratedCode';
     
@@ -412,10 +597,10 @@ export default function Home() {
                     <div className="text-center">
                       <CloudArrowUpIcon className="mx-auto h-12 w-12 text-gray-400" />
                       <div className="mt-4">
-                        <button type="button" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
-                          Selecionar Arquivo
+                        <button type="button" className="px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700">
+                          Adicionar Contexto
                         </button>
-                        <p className="mt-2 text-sm text-gray-500">ou arraste e solte aqui</p>
+                        <p className="mt-2 text-sm text-gray-500">Opcional: padrões técnicos</p>
                         <p className="text-xs text-gray-400">Formatos: .txt, .doc, .docx</p>
                       </div>
                     </div>
@@ -429,12 +614,12 @@ export default function Home() {
                   </div>
 
                   {uploadedContextFile && (
-                    <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                    <div className="mt-3 p-3 bg-gray-50 border border-gray-200 rounded-md">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-2">
-                          <DocumentTextIcon className="h-5 w-5 text-blue-600" />
-                          <span className="text-sm text-blue-700 font-medium">{uploadedContextFile.name}</span>
-                          <span className="text-xs text-blue-500">({(uploadedContextFile.size / 1024).toFixed(1)} KB)</span>
+                          <DocumentTextIcon className="h-5 w-5 text-gray-600" />
+                          <span className="text-sm text-gray-700 font-medium">{uploadedContextFile.name}</span>
+                          <span className="text-xs text-gray-500">({(uploadedContextFile.size / 1024).toFixed(1)} KB)</span>
                         </div>
                         <button
                           onClick={() => {
@@ -442,7 +627,7 @@ export default function Home() {
                             setContextFileContent('');
                             if (contextFileInputRef.current) contextFileInputRef.current.value = '';
                           }}
-                          className="text-xs text-blue-600 underline hover:text-blue-800"
+                          className="text-xs text-gray-600 underline hover:text-gray-800"
                         >
                           Remover
                         </button>
@@ -452,104 +637,66 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Campo de digitação ocupando toda a largura */}
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-gray-300" />
+              {/* Texto alternativo */}
+              {!uploadedFile && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Ou escreva sua história de usuário
+                  </label>
+                  <textarea
+                    value={userStory}
+                    onChange={(e) => setUserStory(e.target.value)}
+                    placeholder="Como usuário, quero..."
+                    className="w-full h-32 px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                  />
                 </div>
-                <div className="relative flex justify-center text-sm">
-                  <span className="px-2 bg-white text-gray-500">ou</span>
-                </div>
-              </div>
+              )}
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Digite sua história de usuário</label>
-                <textarea
-                  value={userStory}
-                  onChange={(e) => {
-                    setUserStory(e.target.value);
-                    if (e.target.value && uploadedFile) {
-                      setUploadedFile(null);
-                      setFileContent('');
-                      if (fileInputRef.current) fileInputRef.current.value = '';
-                    }
-                  }}
-                  placeholder="Como um [tipo de usuário], eu quero [algum objetivo] para que eu possa [algum motivo]..."
-                  className="w-full h-40 px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-
+              {/* Seleção de linguagem */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-3">
-                  Escolha a linguagem <span className="text-red-500">*</span>
+                  Selecione a linguagem de programação
                 </label>
                 <div className="grid grid-cols-2 gap-4">
-                  <div
-                    onClick={() => toggleLanguageSelection('python')}
-                    className={`cursor-pointer p-4 border-2 rounded-lg transition-all ${
-                      selectedLanguage === 'python'
-                        ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200'
-                        : 'border-gray-300 hover:border-gray-400 hover:bg-gray-50'
-                    }`}
-                  >
-                    <div className="flex items-center space-x-3">
-                      <div className={`w-4 h-4 rounded-full border-2 ${
-                        selectedLanguage === 'python' 
-                          ? 'border-blue-500 bg-blue-500' 
-                          : 'border-gray-300'
-                      }`}>
-                        {selectedLanguage === 'python' && (
-                          <div className="w-2 h-2 bg-white rounded-full m-0.5"></div>
-                        )}
+                  {(['python', 'java'] as CodeLanguage[]).map((language) => (
+                    <button
+                      key={language}
+                      onClick={() => toggleLanguageSelection(language)}
+                      className={`p-4 border-2 rounded-lg transition-all ${
+                        selectedLanguage === language
+                          ? 'border-blue-500 bg-blue-50 text-blue-700'
+                          : 'border-gray-200 hover:border-gray-300'
+                      }`}
+                    >
+                      <div className="text-center">
+                        <CodeBracketIcon className="h-8 w-8 mx-auto mb-2" />
+                        <span className="font-medium capitalize">{language}</span>
                       </div>
-                      <div>
-                        <div className="font-medium">🐍 Python</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div
-                    onClick={() => toggleLanguageSelection('java')}
-                    className={`cursor-pointer p-4 border-2 rounded-lg transition-all ${
-                      selectedLanguage === 'java'
-                        ? 'border-orange-500 bg-orange-50 ring-2 ring-orange-200'
-                        : 'border-gray-300 hover:border-gray-400 hover:bg-gray-50'
-                    }`}
-                  >
-                    <div className="flex items-center space-x-3">
-                      <div className={`w-4 h-4 rounded-full border-2 ${
-                        selectedLanguage === 'java' 
-                          ? 'border-orange-500 bg-orange-500' 
-                          : 'border-gray-300'
-                      }`}>
-                        {selectedLanguage === 'java' && (
-                          <div className="w-2 h-2 bg-white rounded-full m-0.5"></div>
-                        )}
-                      </div>
-                      <div>
-                        <div className="font-medium">☕ Java</div>
-                      </div>
-                    </div>
-                  </div>
+                    </button>
+                  ))}
                 </div>
-                
-                {selectedLanguage && (
-                  <div className="mt-2 text-sm text-green-600 flex items-center">
-                    <CheckCircleIcon className="h-4 w-4 mr-1" />
-                    {selectedLanguage === 'python' ? 'Python' : 'Java'} selecionado
-                  </div>
-                )}
               </div>
 
+              {/* Status de polling */}
+              {pollingStatus && (
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                  <div className="flex items-center">
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-600 mr-2"></div>
+                    <span className="text-yellow-700">{pollingStatus}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Botão de gerar */}
               <button
                 onClick={generateCode}
                 disabled={isLoading || (!userStory.trim() && !uploadedFile) || !selectedLanguage}
-                className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-md hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                className="w-full py-3 px-4 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
               >
                 {isLoading ? (
                   <div className="flex items-center justify-center">
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                    {pollingStatus || 'Gerando Código...'}
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
+                    Gerando Código...
                   </div>
                 ) : (
                   'Gerar Código'
@@ -559,153 +706,122 @@ export default function Home() {
           </div>
         )}
 
-        {currentStep === 'code-review' && (
-          <div className="bg-white rounded-xl shadow-lg p-8">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-bold text-gray-900">
-                Código {selectedLanguage === 'python' ? 'Python' : 'Java'} Gerado
-              </h2>
-              <div className={`px-3 py-1 rounded-full text-sm font-medium ${
-                selectedLanguage === 'python' ? 'bg-blue-100 text-blue-800' : 'bg-orange-100 text-orange-800'
-              }`}>
-                {selectedLanguage === 'python' ? '🐍 Python' : '☕ Java'}
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold">Código Gerado</h3>
+        {/* Preview Modal */}
+        {showFilePreview && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold">Preview do Arquivo</h3>
                 <button
-                  onClick={() => copyToClipboard(editedCode)}
-                  className="flex items-center px-3 py-1 border border-gray-300 rounded-md text-sm hover:bg-gray-50"
+                  onClick={() => setShowFilePreview(false)}
+                  className="text-gray-500 hover:text-gray-700"
                 >
-                  <ClipboardDocumentIcon className="h-4 w-4 mr-1" />
-                  Copiar
+                  <XMarkIcon className="h-6 w-6" />
                 </button>
               </div>
-              
-              <textarea
-                value={editedCode}
-                onChange={(e) => setEditedCode(e.target.value)}
-                className="w-full h-80 px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Código será gerado aqui..."
-              />
+              <div className="bg-gray-50 p-4 rounded-md overflow-y-auto max-h-96">
+                <pre className="whitespace-pre-wrap text-sm">{fileContent}</pre>
+              </div>
             </div>
+          </div>
+        )}
 
-            <div className="flex justify-between mt-8">
-              <button
-                onClick={() => setCurrentStep('upload')}
-                className="px-6 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
-              >
-                Voltar
-              </button>
-              <button
-                onClick={generateBDD}
-                disabled={isLoading || !editedCode}
-                className="px-6 py-2 bg-gradient-to-r from-green-600 to-teal-600 text-white rounded-md hover:from-green-700 hover:to-teal-700 disabled:opacity-50"
-              >
-                {isLoading ? (
-                  <div className="flex items-center">
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                    {pollingStatus || 'Gerando Testes...'}
-                  </div>
-                ) : (
-                  'Gerar Testes BDD'
-                )}
-              </button>
+        {currentStep === 'code-review' && (
+          <div className="bg-white rounded-xl shadow-lg p-8">
+            <h2 className="text-2xl font-bold text-gray-900 mb-6">Código Gerado</h2>
+            
+            <div className="space-y-6">
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Código {selectedLanguage?.toUpperCase()}
+                  </label>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(editedCode)}
+                    className="text-sm text-blue-600 hover:text-blue-800 flex items-center"
+                  >
+                    <ClipboardDocumentIcon className="h-4 w-4 mr-1" />
+                    Copiar
+                  </button>
+                </div>
+                <textarea
+                  value={editedCode}
+                  onChange={(e) => setEditedCode(e.target.value)}
+                  className="w-full h-96 px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 font-mono text-sm"
+                />
+              </div>
+
+              <div className="flex space-x-4">
+                <button
+                  onClick={generateBDD}
+                  disabled={isLoading}
+                  className="flex-1 py-3 px-4 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 disabled:bg-gray-300 transition-colors"
+                >
+                  {isLoading ? 'Gerando Testes...' : 'Gerar Testes BDD'}
+                </button>
+                <button
+                  onClick={resetFlow}
+                  className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                >
+                  Reiniciar
+                </button>
+              </div>
             </div>
           </div>
         )}
 
         {currentStep === 'download' && (
           <div className="bg-white rounded-xl shadow-lg p-8">
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Arquivos Gerados</h2>
+            <h2 className="text-2xl font-bold text-gray-900 mb-6">Downloads Prontos</h2>
             
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-              <div className="border rounded-lg p-4">
-                <h3 className="text-lg font-semibold mb-2">
-                  {selectedLanguage === 'python' ? '🐍' : '☕'} Código {selectedLanguage === 'python' ? 'Python' : 'Java'}
-                </h3>
-                <div className="bg-gray-50 rounded p-3 h-32 overflow-y-auto">
-                  <pre className="text-xs text-gray-600">{editedCode.substring(0, 200)}...</pre>
-                </div>
-              </div>
-              
-              <div className="border rounded-lg p-4">
-                <h3 className="text-lg font-semibold mb-2">🧪 Testes BDD</h3>
-                <div className="bg-gray-50 rounded p-3 h-32 overflow-y-auto">
-                  <pre className="text-xs text-gray-600">{bddTest.substring(0, 200)}...</pre>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex justify-between">
-              <button
-                onClick={resetFlow}
-                className="px-6 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
-              >
-                Nova Geração
-              </button>
-              <button
-                onClick={downloadFiles}
-                className="flex items-center px-6 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-md hover:from-blue-700 hover:to-purple-700"
-              >
-                <ArrowDownTrayIcon className="h-4 w-4 mr-2" />
-                Download Arquivos
-              </button>
-            </div>
-          </div>
-        )}
-
-        {showFilePreview && uploadedFile && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[80vh] flex flex-col">
-              <div className="flex items-center justify-between p-6 border-b">
-                <div className="flex items-center space-x-3">
-                  <DocumentTextIcon className="h-6 w-6 text-blue-600" />
-                  <div>
-                    <h3 className="text-lg font-semibold">Preview do Arquivo</h3>
-                    <p className="text-sm text-gray-500">{uploadedFile.name}</p>
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="border border-gray-200 rounded-lg p-4">
+                  <div className="flex items-center mb-3">
+                    <CodeBracketIcon className="h-6 w-6 text-blue-600 mr-2" />
+                    <h3 className="font-medium">Código {selectedLanguage?.toUpperCase()}</h3>
+                  </div>
+                  <p className="text-sm text-gray-600 mb-3">
+                    Arquivo pronto para download
+                  </p>
+                  <div className="bg-gray-50 p-3 rounded text-xs font-mono max-h-32 overflow-y-auto">
+                    {editedCode.substring(0, 200)}...
                   </div>
                 </div>
+
+                <div className="border border-gray-200 rounded-lg p-4">
+                  <div className="flex items-center mb-3">
+                    <CheckCircleIcon className="h-6 w-6 text-green-600 mr-2" />
+                    <h3 className="font-medium">Testes BDD</h3>
+                  </div>
+                  <p className="text-sm text-gray-600 mb-3">
+                    Cenários de teste automatizados
+                  </p>
+                  <div className="bg-gray-50 p-3 rounded text-xs font-mono max-h-32 overflow-y-auto">
+                    {bddTest.substring(0, 200)}...
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex space-x-4">
                 <button
-                  onClick={() => setShowFilePreview(false)}
-                  className="p-2 hover:bg-gray-100 rounded-lg"
+                  onClick={downloadFiles}
+                  className="flex-1 py-3 px-4 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center"
                 >
-                  <XMarkIcon className="h-5 w-5 text-gray-500" />
+                  <ArrowDownTrayIcon className="h-5 w-5 mr-2" />
+                  Baixar Arquivos
                 </button>
-              </div>
-              
-              <div className="flex-1 p-6 overflow-auto">
-                <div className="bg-gray-50 rounded-lg p-4 border">
-                  <pre className="whitespace-pre-wrap text-sm text-gray-700">{fileContent}</pre>
-                </div>
-              </div>
-              
-              <div className="flex justify-between items-center p-6 border-t bg-gray-50">
-                <div className="text-sm text-gray-500">
-                  {fileContent.trim().length} caracteres • {fileContent.split('\n').length} linhas
-                </div>
                 <button
-                  onClick={() => setShowFilePreview(false)}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  onClick={resetFlow}
+                  className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
                 >
-                  Fechar
+                  Nova Geração
                 </button>
               </div>
             </div>
           </div>
         )}
       </main>
-
-      <footer className="bg-white border-t mt-16">
-        <div className="max-w-7xl mx-auto px-4 py-8">
-          <div className="text-center text-gray-500 text-sm">
-            <p>© 2025 Compass UOL - Powered by AWS</p>
-            <p className="mt-2">Proof of Concept - Gerador de Código com Inteligência Artificial</p>
-          </div>
-        </div>
-      </footer>
     </div>
   );
 }

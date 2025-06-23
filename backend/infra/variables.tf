@@ -7,11 +7,11 @@ variable "aws_region" {
 variable "result_bucket_name" {
   description = "Globally unique S3 bucket name to store outputs"
   type        = string
-  default     = "pocdesktopresult"
+  default     = "pocdesktoptemp"
 }
 
 variable "node_runtime_version" {
   description = "Variable for runtime for node.js"
   type        = string
-  default     = "nodejs20.x"
+  default     = "nodejs22.x"
 }

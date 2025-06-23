@@ -32,7 +32,7 @@ data "aws_iam_policy_document" "lambda_assume" {
 }
 
 resource "aws_iam_role" "lambda_exec" {
-  name               = "generate_code_lambda_exec"
+  name               = "generate_code_lambda_exec_terraform"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
@@ -55,7 +55,6 @@ resource "aws_iam_role_policy_attachment" "stepfunctions" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = "arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess"
 }
-
 
 # Pacotes ZIP das Lambdas
 
@@ -101,6 +100,14 @@ data "archive_file" "bdd_test_zip" {
   output_path = "${path.module}/lambdas/generate_bdd_teste.zip"
 }
 
+# Lambda Layer – Bedrock
+resource "aws_lambda_layer_version" "bedrock_layer" {
+  layer_name          = "bedrock-layer"
+  filename            = "${path.module}/../layers/bedrock-layer.zip"
+  compatible_runtimes = ["nodejs22.x", "nodejs20.x", "nodejs18.x"] # Múltiplas versões
+  license_info        = "Apache-2.0"
+  description         = "SDK Bedrock e utilitários"
+}
 # Lambda functions
 
 resource "aws_lambda_function" "stepfunction_trigger" {
@@ -111,7 +118,7 @@ resource "aws_lambda_function" "stepfunction_trigger" {
   filename         = data.archive_file.trigger_zip.output_path
   source_code_hash = data.archive_file.trigger_zip.output_base64sha256
   memory_size      = 256
-  timeout          = 30
+  timeout          = 300
 
   environment {
     variables = {
@@ -119,6 +126,7 @@ resource "aws_lambda_function" "stepfunction_trigger" {
       RESULT_BUCKET = aws_s3_bucket.results.bucket
     }
   }
+  layers = [aws_lambda_layer_version.bedrock_layer.arn]
 }
 
 resource "aws_lambda_function" "extract_content_data" {
@@ -129,7 +137,8 @@ resource "aws_lambda_function" "extract_content_data" {
   filename         = data.archive_file.extract_zip.output_path
   source_code_hash = data.archive_file.extract_zip.output_base64sha256
   memory_size      = 128
-  timeout          = 15
+  timeout          = 300
+  layers           = [aws_lambda_layer_version.bedrock_layer.arn]
 }
 
 resource "aws_lambda_function" "generate_java_code" {
@@ -140,7 +149,8 @@ resource "aws_lambda_function" "generate_java_code" {
   filename         = data.archive_file.java_zip.output_path
   source_code_hash = data.archive_file.java_zip.output_base64sha256
   memory_size      = 128
-  timeout          = 20
+  timeout          = 300
+  layers           = [aws_lambda_layer_version.bedrock_layer.arn]
 }
 
 resource "aws_lambda_function" "generate_python_code" {
@@ -151,7 +161,8 @@ resource "aws_lambda_function" "generate_python_code" {
   filename         = data.archive_file.python_zip.output_path
   source_code_hash = data.archive_file.python_zip.output_base64sha256
   memory_size      = 128
-  timeout          = 20
+  timeout          = 300
+  layers           = [aws_lambda_layer_version.bedrock_layer.arn]
 }
 
 resource "aws_lambda_function" "save_and_return_data" {
@@ -162,13 +173,14 @@ resource "aws_lambda_function" "save_and_return_data" {
   filename         = data.archive_file.save_zip.output_path
   source_code_hash = data.archive_file.save_zip.output_base64sha256
   memory_size      = 128
-  timeout          = 30
+  timeout          = 300
 
   environment {
     variables = {
       RESULT_BUCKET = aws_s3_bucket.results.bucket
     }
   }
+  layers = [aws_lambda_layer_version.bedrock_layer.arn]
 }
 
 resource "aws_lambda_function" "generate_bdd_teste" {
@@ -179,13 +191,14 @@ resource "aws_lambda_function" "generate_bdd_teste" {
   filename         = data.archive_file.bdd_test_zip.output_path
   source_code_hash = data.archive_file.bdd_test_zip.output_base64sha256
   memory_size      = 128
-  timeout          = 30
+  timeout          = 300
 
   environment {
     variables = {
       RESULT_BUCKET = aws_s3_bucket.results.bucket
     }
   }
+  layers = [aws_lambda_layer_version.bedrock_layer.arn]
 }
 
 resource "aws_lambda_function" "stepfunction_bdd_trigger" {
@@ -196,7 +209,7 @@ resource "aws_lambda_function" "stepfunction_bdd_trigger" {
   filename         = data.archive_file.bdd_trigger_zip.output_path
   source_code_hash = data.archive_file.bdd_trigger_zip.output_base64sha256
   memory_size      = 256
-  timeout          = 10 # só dispara StartExecution
+  timeout          = 300
 
   environment {
     variables = {
@@ -204,14 +217,10 @@ resource "aws_lambda_function" "stepfunction_bdd_trigger" {
       RESULT_BUCKET = aws_s3_bucket.results.bucket
     }
   }
+  layers = [aws_lambda_layer_version.bedrock_layer.arn]
 }
 
 # CloudWatch Log Group for Step Functions
-
-resource "aws_cloudwatch_log_group" "sfn_logs" {
-  name              = "/aws/states/generate-code-flow"
-  retention_in_days = 30
-}
 
 # IAM ROLE for Step Functions
 data "aws_iam_policy_document" "sfn_assume" {
@@ -225,7 +234,7 @@ data "aws_iam_policy_document" "sfn_assume" {
 }
 
 resource "aws_iam_role" "sfn_role" {
-  name               = "generate_code_sfn_role"
+  name               = "generate_code_sfn_role_terraform"
   assume_role_policy = data.aws_iam_policy_document.sfn_assume.json
 }
 
@@ -271,88 +280,105 @@ resource "aws_iam_role_policy" "sfn_invoke_and_logs" {
 
 
 
+
 locals {
   sfn_definition = jsonencode({
-    Comment = "Generate code flow",
-    StartAt = "ExtractContentData",
-    States = {
-      ExtractContentData = {
-        Type     = "Task",
-        Resource = "arn:aws:states:::lambda:invoke",
-        Parameters = {
-          FunctionName = aws_lambda_function.extract_content_data.arn
-          "Payload.$"  = "$"
+    "Comment" : "Generate code flow with error handling",
+    "StartAt" : "ExtractContentData",
+    "States" : {
+      "ExtractContentData" : {
+        "Type" : "Task",
+        "Resource" : "arn:aws:states:::lambda:invoke",
+        "Parameters" : {
+          "FunctionName" : "${aws_lambda_function.extract_content_data.arn}",
+          "Payload.$" : "$"
         },
-        ResultPath = "$.resultData",
-        Next       = "LanguageChoice"
+        "ResultPath" : "$.extract_result",
+        "Next" : "CheckExtractContentData"
       },
-      LanguageChoice = {
-        Type = "Choice",
-        Choices = [
+      "CheckExtractContentData" : {
+        "Type" : "Choice",
+        "Choices" : [
           {
-            Variable     = "$.language",
-            StringEquals = "java",
-            Next         = "GenerateJavaCode"
-          },
-          {
-            Variable     = "$.language",
-            StringEquals = "python",
-            Next         = "GeneratePythonCode"
+            "Variable" : "$.extract_result.Payload.statuscode",
+            "NumericEquals" : 200,
+            "Next" : "LanguageChoice"
           }
         ],
-        Default = "UnsupportedLanguage"
+        "Default" : "SaveAndReturn"
       },
-      GenerateJavaCode = {
-        Type     = "Task",
-        Resource = "arn:aws:states:::lambda:invoke",
-        Parameters = {
-          FunctionName = aws_lambda_function.generate_java_code.arn
-          "Payload.$"  = "$.resultData"
+      "LanguageChoice" : {
+        "Type" : "Choice",
+        "Choices" : [
+          {
+            "Variable" : "$.user_data.language",
+            "StringEquals" : "java",
+            "Next" : "GenerateJavaCode"
+          },
+          {
+            "Variable" : "$.user_data.language",
+            "StringEquals" : "python",
+            "Next" : "GeneratePythonCode"
+          }
+        ],
+        "Default" : "UnsupportedLanguage"
+      },
+      "GenerateJavaCode" : {
+        "Type" : "Task",
+        "Resource" : "arn:aws:states:::lambda:invoke",
+        "Parameters" : {
+          "FunctionName" : "${aws_lambda_function.generate_java_code.arn}",
+          "Payload.$" : "$.extract_result.Payload"
         },
-        ResultPath = "$.codeResponse",
-        Next       = "SaveAndReturn"
+        "ResultPath" : "$.code_result",
+        "Next" : "CheckGenerateCode"
       },
-      GeneratePythonCode = {
-        Type     = "Task",
-        Resource = "arn:aws:states:::lambda:invoke",
-        Parameters = {
-          FunctionName = aws_lambda_function.generate_python_code.arn
-          "Payload.$"  = "$.resultData"
+      "GeneratePythonCode" : {
+        "Type" : "Task",
+        "Resource" : "arn:aws:states:::lambda:invoke",
+        "Parameters" : {
+          "FunctionName" : "${aws_lambda_function.generate_python_code.arn}",
+          "Payload.$" : "$.extract_result.Payload"
         },
-        ResultPath = "$.codeResponse",
-        Next       = "SaveAndReturn"
+        "ResultPath" : "$.code_result",
+        "Next" : "CheckGenerateCode"
       },
-      UnsupportedLanguage = {
-        Type  = "Fail",
-        Error = "UnsupportedLanguage",
-        Cause = "Only java or python are supported"
+      "CheckGenerateCode" : {
+        "Type" : "Choice",
+        "Choices" : [
+          {
+            "Variable" : "$.code_result.Payload.statuscode",
+            "NumericEquals" : 200,
+            "Next" : "SaveAndReturn"
+          }
+        ],
+        "Default" : "SaveAndReturn"
       },
-
-      SaveAndReturn = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::lambda:invoke"
-        Parameters = {
-          FunctionName = aws_lambda_function.save_and_return_data.arn
-          "Payload.$"  = "$"
-        }
-        ResultPath = "$.finalResponse" # onde guardar o resultado bruto
-        End        = true
+      "UnsupportedLanguage" : {
+        "Type" : "Fail",
+        "Error" : "UnsupportedLanguage",
+        "Cause" : "Only java or python are supported"
       },
+      "SaveAndReturn" : {
+        "Type" : "Task",
+        "Resource" : "arn:aws:states:::lambda:invoke",
+        "Parameters" : {
+          "FunctionName" : "${aws_lambda_function.save_and_return_data.arn}",
+          "Payload.$" : "$"
+        },
+        "ResultPath" : "$.result",
+        "End" : true
+      }
     }
   })
 }
+
 
 resource "aws_sfn_state_machine" "generate_code_flow" {
   name       = "generate-code-flow"
   role_arn   = aws_iam_role.sfn_role.arn
   type       = "STANDARD"
   definition = local.sfn_definition
-  logging_configuration {
-    #log_destination        = "${aws_cloudwatch_log_group.sfn_logs.arn}:*"
-    log_destination        = "${aws_cloudwatch_log_group.sfn_logs.arn}:*"
-    include_execution_data = true
-    level                  = "ALL"
-  }
 }
 
 # generate_bdd state_machine
@@ -405,11 +431,6 @@ resource "aws_sfn_state_machine" "generate_bdd_flow" {
   role_arn   = aws_iam_role.sfn_role.arn
   type       = "STANDARD"
   definition = local.sfn_bdd_definition
-  logging_configuration {
-    log_destination        = "${aws_cloudwatch_log_group.sfn_logs.arn}:*"
-    include_execution_data = true
-    level                  = "ALL"
-  }
 }
 
 

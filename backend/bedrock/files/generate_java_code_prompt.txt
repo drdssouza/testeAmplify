@@ -1,0 +1,9 @@
+Com as informações que você tem atualmente, gere um código java que siga as
+seguintes regras:
+
+- Um comentário inicial com o nome do arquivo.java
+- Um autor, pode ser fictício no momento
+- Explicação resumida do que o código faz.
+- As informações para o código se seguirão após a marca"info_code"
+
+info_code:

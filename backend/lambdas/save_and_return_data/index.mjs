@@ -1,37 +1,87 @@
-
-// lambda_save_and_return_data/index.mjs
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const s3 = new S3Client();
 const BUCKET = process.env.RESULT_BUCKET;
 
+// 🔥 Função que normaliza o payload da Step Function
 const normalize = (event) => {
-  if (typeof event === "string") return JSON.parse(event);
-  if (event?.body) return typeof event.body === "string" ? JSON.parse(event.body) : event.body;
-  return event;
+  const parsed =
+    typeof event === "string"
+      ? JSON.parse(event)
+      : event?.body
+      ? typeof event.body === "string"
+        ? JSON.parse(event.body)
+        : event.body
+      : event;
+
+  // ✅ Prioriza code_result > extract_result > erro padrão
+  const mainPayload =
+    parsed?.code_result?.Payload ??
+    parsed?.extract_result?.Payload ??
+    {
+      statuscode: 500,
+      error: "Unsupported language or previous step failure",
+    };
+
+  return {
+    ...parsed,
+    ...mainPayload,
+  };
 };
 
+// 🔥 Função que faz o upload no S3
 const putS3File = async (filename, content) => {
   await s3.send(
     new PutObjectCommand({
       Bucket: BUCKET,
       Key: filename,
-      Body: JSON.stringify(content),
-      ContentType: "application/json"
+      Body: JSON.stringify(content, null, 2),
+      ContentType: "application/json",
     })
   );
   return filename;
 };
 
+// 🚀 Handler principal da Lambda
 export const handler = async (event) => {
+  const body = normalize(event);
+
+  const {
+    statuscode = 200,
+    filename = null,
+    start_timestamp = new Date(),
+    configuration = {},
+    user_data = {},
+    extracted_data = {},
+    code_generated = {},
+  } = body;
+
   try {
-    const parsed = normalize(event);
-    const codePayload = parsed.codeResponse?.Payload ?? {};
-    const filename = codePayload.filename || parsed.filename;
-    const data = codePayload.data ?? {};
-    await putS3File(filename, data);
-    return { statusCode: 200, filename };
+    const result = {
+      statuscode,
+      filename,
+      execution_time: (Date.now()-start_timestamp),
+      configuration,
+      user_data,
+      extracted_data,
+      code_generated,
+    };
+
+    await putS3File(filename, result);
+
+    return result;
   } catch (err) {
-    return { statusCode: 500, error: err.message ?? "Unknown error" };
+    const result = {
+      statuscode: 500,
+      filename,
+      start_timestamp,
+      configuration,
+      user_data,
+      extracted_data,
+      code_generated,
+      error: err.message ?? "Unknown error",
+    };
+
+    return result;
   }
 };

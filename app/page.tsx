@@ -356,45 +356,70 @@ export default function Home() {
 
       // Fazer polling do resultado (agora com configurações dinâmicas)
       const generatedContent = await pollS3File(presignedUrl);
-      
+
       if (!generatedContent) {
         throw new Error('Código não foi gerado');
       }
-      
+
       // Tentar parsear o resultado como JSON
       let parsedResult;
       try {
         parsedResult = JSON.parse(generatedContent);
         console.log('✅ JSON parseado:', parsedResult);
         
-        // ✅ CORREÇÃO: Extrair código da estrutura correta
-        if (parsedResult.code_generated?.data) {
-          console.log('📝 Código encontrado em code_generated.data');
-          setGeneratedCode(parsedResult.code_generated.data);
-          setEditedCode(parsedResult.code_generated.data);
+        // 🔧 CORREÇÃO: Extrair código da estrutura das lambdas corrigidas
+        let extractedCode = '';
+        
+        if (parsedResult.frontendData?.formattedCode) {
+          console.log('📝 Código encontrado em frontendData.formattedCode');
+          extractedCode = parsedResult.frontendData.formattedCode;
+        } else if (parsedResult.frontendData?.code) {
+          console.log('📝 Código encontrado em frontendData.code');
+          extractedCode = parsedResult.frontendData.code;
+        } else if (parsedResult.code_generated?.code) {
+          console.log('📝 Código encontrado em code_generated.code');
+          extractedCode = parsedResult.code_generated.code;
         } else if (parsedResult.generatedCode) {
           console.log('📝 Código encontrado em generatedCode');
-          setGeneratedCode(parsedResult.generatedCode);
-          setEditedCode(parsedResult.generatedCode);
+          extractedCode = parsedResult.generatedCode;
         } else if (parsedResult.code) {
           console.log('📝 Código encontrado em code');
-          setGeneratedCode(parsedResult.code);
-          setEditedCode(parsedResult.code);
+          extractedCode = parsedResult.code;
         } else if (typeof parsedResult === 'string') {
           console.log('📝 Resultado é string');
-          setGeneratedCode(parsedResult);
-          setEditedCode(parsedResult);
+          extractedCode = parsedResult;
         } else {
-          console.log('📝 Usando JSON como fallback');
-          setGeneratedCode(JSON.stringify(parsedResult, null, 2));
-          setEditedCode(JSON.stringify(parsedResult, null, 2));
+          console.log('📝 Nenhum código encontrado, usando JSON completo');
+          extractedCode = JSON.stringify(parsedResult, null, 2);
         }
+        
+        // Limpar o código removendo escapes desnecessários
+        const cleanedCode = extractedCode
+          .replace(/\\n/g, '\n')      // Converter \\n para quebra de linha real
+          .replace(/\\t/g, '\t')      // Converter \\t para tab real
+          .replace(/\\"/g, '"')       // Converter \" para aspas normais
+          .replace(/\\\\/g, '\\')     // Converter \\\\ para \ simples
+          .trim();                    // Remover espaços extras
+        
+        console.log('🧹 Código limpo:', {
+          original: extractedCode.length,
+          cleaned: cleanedCode.length,
+          preview: cleanedCode.substring(0, 100) + '...'
+        });
+        
+        setGeneratedCode(cleanedCode);
+        setEditedCode(cleanedCode);
         
       } catch (parseError) {
         // Se não for JSON válido, usar o conteúdo como texto
         console.log('📄 Resultado não é JSON, usando como texto');
-        setGeneratedCode(generatedContent);
-        setEditedCode(generatedContent);
+        const cleanedContent = generatedContent
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, '\t')
+          .trim();
+        
+        setGeneratedCode(cleanedContent);
+        setEditedCode(cleanedContent);
       }
       
       setCurrentStep('code-review');

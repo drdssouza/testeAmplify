@@ -464,8 +464,36 @@ export default function Home() {
         throw new Error('URL de monitoramento não foi fornecida');
       }
 
-      const bddContent = await pollS3File(presignedUrl);
-      setBddTest(bddContent);
+      // ✅ ÚNICA ALTERAÇÃO: Melhorar o parsing do resultado
+      const bddResult = await pollS3File(presignedUrl);
+      
+      // Tentar parsear como JSON para extrair o BDD corretamente
+      let finalBddContent = '';
+      try {
+        const parsedResult = JSON.parse(bddResult);
+        
+        // Extrair BDD da estrutura correta retornada pela nova lambda
+        if (parsedResult.bdd_generated?.content) {
+          finalBddContent = parsedResult.bdd_generated.content;
+        } else if (parsedResult.bdd?.content) {
+          finalBddContent = parsedResult.bdd.content;
+        } else if (parsedResult.content) {
+          finalBddContent = parsedResult.content;
+        } else if (typeof parsedResult === 'string') {
+          finalBddContent = parsedResult;
+        } else {
+          // Fallback: usar resultado original se não encontrar estrutura conhecida
+          finalBddContent = bddResult;
+        }
+      } catch (parseError) {
+        // Se não conseguir parsear JSON, usar o resultado direto
+        finalBddContent = bddResult;
+      }
+      
+      // Garantir quebras de linha corretas
+      finalBddContent = finalBddContent.replace(/\\n/g, '\n');
+      
+      setBddTest(finalBddContent);
       setCurrentStep('download');
       setPollingStatus('');
       

@@ -76,7 +76,7 @@ export default function Home() {
     } catch (error) {
       console.warn('⚠️ Erro ao validar arquivo, usando validação padrão');
       
-      // Fallback para validação padrão
+      // Fallback para validação padrão - AGORA INCLUI PDF
       const allowedTypes = ['.txt', '.doc', '.docx', '.pdf'];
       const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
       
@@ -127,27 +127,23 @@ export default function Home() {
         // Log interno apenas (não mostrar para usuário)
         console.log(`🔄 Tentativa ${attempt}/${maxAttempts}`);
         
-        // Primeiro, verificar se o arquivo existe (HEAD request)
-        const headResponse = await fetch(presignedUrl, { method: 'HEAD' });
+        // Fazer requisição direta (sem HEAD)
+        const contentResponse = await fetch(presignedUrl);
         
-        if (headResponse.ok) {
-          console.log(`📋 Arquivo encontrado na tentativa ${attempt}`);
+        if (contentResponse.ok) {
+          console.log(`✅ Arquivo encontrado na tentativa ${attempt}`);
           
           // Atualizar status para download
           setPollingStatus('📥 Código gerado! Baixando resultado...');
           
-          // Arquivo existe, fazer download
-          const contentResponse = await fetch(presignedUrl);
-          if (contentResponse.ok) {
-            const content = await contentResponse.text();
-            console.log(`✅ Conteúdo baixado: ${content.length} caracteres`);
-            setPollingStatus('');
-            return content;
-          } else {
-            console.log(`⚠️ Erro ao baixar conteúdo: ${contentResponse.status}`);
-          }
+          const content = await contentResponse.text();
+          console.log(`✅ Conteúdo baixado: ${content.length} caracteres`);
+          setPollingStatus('');
+          return content;
+        } else if (contentResponse.status === 404) {
+          console.log(`⏳ Tentativa ${attempt}: arquivo ainda não existe (404)`);
         } else {
-          console.log(`⏳ Tentativa ${attempt}: arquivo ainda não existe (${headResponse.status})`);
+          console.log(`⚠️ Erro na tentativa ${attempt}: ${contentResponse.status}`);
         }
         
         // Atualizar mensagem de progresso baseada no tempo
@@ -175,11 +171,12 @@ export default function Home() {
   };
 
   const processFile = (file: File, type: 'story' | 'context') => {
-    const allowedTypes = ['.txt', '.doc', '.docx'];
+    // ATUALIZADO: Agora aceita PDF também
+    const allowedTypes = ['.txt', '.doc', '.docx', '.pdf'];
     const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
     
     if (!allowedTypes.includes(fileExtension)) {
-      setError('Formato não suportado. Use .txt, .doc ou .docx');
+      setError('Formato não suportado. Use .txt, .doc, .docx ou .pdf');
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
@@ -194,6 +191,17 @@ export default function Home() {
     }
     setError('');
     
+    // Para PDFs, não tentar ler como texto (a lambda vai processar)
+    if (fileExtension === '.pdf') {
+      if (type === 'story') {
+        setFileContent('[Arquivo PDF - conteúdo será processado pela IA]');
+      } else {
+        setContextFileContent('[Arquivo PDF - conteúdo será processado pela IA]');
+      }
+      return;
+    }
+    
+    // Para outros tipos, ler como texto
     const reader = new FileReader();
     reader.onload = (e) => {
       const content = (e.target?.result as string || '').trim();
@@ -265,15 +273,16 @@ export default function Home() {
         
         const files = [];
         
-        // Arquivo principal (história)
+        // Arquivo principal (história) - AGORA SUPORTA PDF
         const mainFileBase64 = await fileToBase64(uploadedFile);
         files.push({
           name: uploadedFile.name,
           type: uploadedFile.type || 'text/plain',
-          content: mainFileBase64
+          content: mainFileBase64,
+          category: 'story' // Identificar como história
         });
 
-        // Arquivo de contexto (se existir)
+        // Arquivo de contexto (se existir) - AGORA SUPORTA PDF
         if (uploadedContextFile && contextFileContent.trim()) {
           console.log('📄 Incluindo arquivo de contexto:', uploadedContextFile.name);
           
@@ -288,7 +297,8 @@ export default function Home() {
           files.push({
             name: uploadedContextFile.name,
             type: uploadedContextFile.type || 'text/plain',
-            content: contextFileBase64
+            content: contextFileBase64,
+            category: 'context' // Identificar como contexto
           });
         }
 
@@ -355,16 +365,27 @@ export default function Home() {
       let parsedResult;
       try {
         parsedResult = JSON.parse(generatedContent);
+        console.log('✅ JSON parseado:', parsedResult);
         
-        // Se o resultado tem estrutura específica, extrair o código
-        if (parsedResult.generatedCode || parsedResult.code) {
-          setGeneratedCode(parsedResult.generatedCode || parsedResult.code);
-          setEditedCode(parsedResult.generatedCode || parsedResult.code);
+        // ✅ CORREÇÃO: Extrair código da estrutura correta
+        if (parsedResult.code_generated?.data) {
+          console.log('📝 Código encontrado em code_generated.data');
+          setGeneratedCode(parsedResult.code_generated.data);
+          setEditedCode(parsedResult.code_generated.data);
+        } else if (parsedResult.generatedCode) {
+          console.log('📝 Código encontrado em generatedCode');
+          setGeneratedCode(parsedResult.generatedCode);
+          setEditedCode(parsedResult.generatedCode);
+        } else if (parsedResult.code) {
+          console.log('📝 Código encontrado em code');
+          setGeneratedCode(parsedResult.code);
+          setEditedCode(parsedResult.code);
         } else if (typeof parsedResult === 'string') {
+          console.log('📝 Resultado é string');
           setGeneratedCode(parsedResult);
           setEditedCode(parsedResult);
         } else {
-          // Fallback: usar o JSON como string
+          console.log('📝 Usando JSON como fallback');
           setGeneratedCode(JSON.stringify(parsedResult, null, 2));
           setEditedCode(JSON.stringify(parsedResult, null, 2));
         }
@@ -555,13 +576,13 @@ export default function Home() {
                           Selecionar Arquivo
                         </button>
                         <p className="mt-2 text-sm text-gray-500">ou arraste e solte aqui</p>
-                        <p className="text-xs text-gray-400">Formatos: .txt, .doc, .docx</p>
+                        <p className="text-xs text-gray-400">Formatos: .txt, .doc, .docx, .pdf</p>
                       </div>
                     </div>
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept=".txt,.doc,.docx"
+                      accept=".txt,.doc,.docx,.pdf"
                       onChange={(e) => handleFileUpload(e, 'story')}
                       className="hidden"
                     />
@@ -576,12 +597,18 @@ export default function Home() {
                           <span className="text-xs text-blue-500">({(uploadedFile.size / 1024).toFixed(1)} KB)</span>
                         </div>
                         <div className="flex space-x-2">
-                          <button
-                            onClick={() => setShowFilePreview(true)}
-                            className="px-2 py-1 text-xs text-blue-600 bg-blue-100 rounded hover:bg-blue-200"
-                          >
-                            <EyeIcon className="h-3 w-3 inline mr-1" />Visualizar
-                          </button>
+                          {uploadedFile.name.toLowerCase().endsWith('.pdf') ? (
+                            <span className="px-2 py-1 text-xs text-blue-600 bg-blue-100 rounded">
+                              PDF será processado pela IA
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => setShowFilePreview(true)}
+                              className="px-2 py-1 text-xs text-blue-600 bg-blue-100 rounded hover:bg-blue-200"
+                            >
+                              <EyeIcon className="h-3 w-3 inline mr-1" />Visualizar
+                            </button>
+                          )}
                           <button
                             onClick={() => {
                               setUploadedFile(null);
@@ -615,13 +642,13 @@ export default function Home() {
                           Adicionar Contexto
                         </button>
                         <p className="mt-2 text-sm text-gray-500">Opcional: padrões técnicos</p>
-                        <p className="text-xs text-gray-400">Formatos: .txt, .doc, .docx</p>
+                        <p className="text-xs text-gray-400">Formatos: .txt, .doc, .docx, .pdf</p>
                       </div>
                     </div>
                     <input
                       ref={contextFileInputRef}
                       type="file"
-                      accept=".txt,.doc,.docx"
+                      accept=".txt,.doc,.docx,.pdf"
                       onChange={(e) => handleFileUpload(e, 'context')}
                       className="hidden"
                     />
@@ -635,16 +662,23 @@ export default function Home() {
                           <span className="text-sm text-gray-700 font-medium">{uploadedContextFile.name}</span>
                           <span className="text-xs text-gray-500">({(uploadedContextFile.size / 1024).toFixed(1)} KB)</span>
                         </div>
-                        <button
-                          onClick={() => {
-                            setUploadedContextFile(null);
-                            setContextFileContent('');
-                            if (contextFileInputRef.current) contextFileInputRef.current.value = '';
-                          }}
-                          className="text-xs text-gray-600 underline hover:text-gray-800"
-                        >
-                          Remover
-                        </button>
+                        <div className="flex space-x-2">
+                          {uploadedContextFile.name.toLowerCase().endsWith('.pdf') && (
+                            <span className="px-2 py-1 text-xs text-gray-600 bg-gray-100 rounded">
+                              PDF será processado pela IA
+                            </span>
+                          )}
+                          <button
+                            onClick={() => {
+                              setUploadedContextFile(null);
+                              setContextFileContent('');
+                              if (contextFileInputRef.current) contextFileInputRef.current.value = '';
+                            }}
+                            className="text-xs text-gray-600 underline hover:text-gray-800"
+                          >
+                            Remover
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}

@@ -232,7 +232,6 @@ export default function Home() {
     }
   };
 
-  // Função generateCode atualizada para usar validações e configurações dinâmicas
   const generateCode = async () => {
     const content = uploadedFile ? fileContent : userStory.trim();
     if (!content) {
@@ -307,7 +306,7 @@ export default function Home() {
           inputType: "file",
           files: files,
           userStory: "", // Vazio quando enviando arquivos
-          contexto: contextFileContent.trim() // Info adicional de contexto
+          contexto: contextFileContent.trim() // ✅ MUDANÇA: contexto ao invés de contextualInfo
         };
 
       } else {
@@ -318,7 +317,7 @@ export default function Home() {
           ...requestPayload,
           inputType: "text", 
           userStory: content,
-          contexto: contextFileContent.trim()
+          contexto: contextFileContent.trim() // ✅ MUDANÇA: contexto ao invés de contextualInfo
         };
       }
 
@@ -556,7 +555,7 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
-              <div className="w-10 h-10 bg-gradient-to-r from-blue-600 to-purple-600 rounded-lg flex items-center justify-center">
+              <div className="w-10 h-10 bg-gradient-to-r from-orange-500 to-orange-600 rounded-lg flex items-center justify-center">
                 <CodeBracketIcon className="h-6 w-6 text-white" />
               </div>
               <div>
@@ -629,13 +628,13 @@ export default function Home() {
                           Selecionar Arquivo
                         </button>
                         <p className="mt-2 text-sm text-gray-500">ou arraste e solte aqui</p>
-                        <p className="text-xs text-gray-400">Formatos: .txt, .doc, .docx, .pdf</p>
+                        <p className="text-xs text-gray-400">Formatos: .txt, .doc, .docx</p>
                       </div>
                     </div>
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept=".txt,.doc,.docx,.pdf"
+                      accept=".txt,.doc,.docx"
                       onChange={(e) => handleFileUpload(e, 'story')}
                       className="hidden"
                     />
@@ -695,13 +694,13 @@ export default function Home() {
                           Adicionar Contexto
                         </button>
                         <p className="mt-2 text-sm text-gray-500">Opcional: padrões técnicos</p>
-                        <p className="text-xs text-gray-400">Formatos: .txt, .doc, .docx, .pdf</p>
+                        <p className="text-xs text-gray-400">Formatos: .txt, .doc, .docx</p>
                       </div>
                     </div>
                     <input
                       ref={contextFileInputRef}
                       type="file"
-                      accept=".txt,.doc,.docx,.pdf"
+                      accept=".txt,.doc,.docx"
                       onChange={(e) => handleFileUpload(e, 'context')}
                       className="hidden"
                     />

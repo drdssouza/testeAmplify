@@ -10,6 +10,121 @@ import {
 type Step = 'upload' | 'code-review' | 'download';
 type CodeLanguage = 'python' | 'java';
 
+// Interfaces para tokens
+interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total: number;
+}
+
+interface TokenSummary {
+  extraction?: TokenUsage;
+  codeGeneration?: TokenUsage;
+  bddGeneration?: TokenUsage;
+  grandTotal: number;
+}
+
+// Componente para exibir tokens
+interface TokenDisplayProps {
+  summary: TokenSummary;
+  showTitle?: boolean;
+}
+
+const TokenDisplay: React.FC<TokenDisplayProps> = ({ summary, showTitle = true }) => {
+  const formatNumber = (num: number) => {
+    return new Intl.NumberFormat('pt-BR').format(num);
+  };
+
+  const getStepIcon = (step: string) => {
+    switch (step) {
+      case 'extraction':
+        return '📄';
+      case 'codeGeneration':
+        return '⚡';
+      case 'bddGeneration':
+        return '🧪';
+      default:
+        return '🔸';
+    }
+  };
+
+  const getStepName = (step: string) => {
+    switch (step) {
+      case 'extraction':
+        return 'Análise da História';
+      case 'codeGeneration':
+        return 'Geração de Código';
+      case 'bddGeneration':
+        return 'Geração de Testes';
+      default:
+        return step;
+    }
+  };
+
+  return (
+    <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4">
+      {showTitle && (
+        <div className="flex items-center mb-3">
+          <div className="w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center mr-2">
+            <span className="text-white text-xs font-bold">T</span>
+          </div>
+          <h3 className="text-sm font-semibold text-blue-900">Consumo de Tokens</h3>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {Object.entries(summary).map(([step, usage]) => {
+          if (step === 'grandTotal' || !usage || typeof usage === 'number') return null;
+          
+          return (
+            <div key={step} className="flex items-center justify-between bg-white bg-opacity-70 rounded-md px-3 py-2">
+              <div className="flex items-center space-x-2">
+                <span className="text-lg">{getStepIcon(step)}</span>
+                <span className="text-sm font-medium text-gray-700">
+                  {getStepName(step)}
+                </span>
+              </div>
+              <div className="flex items-center space-x-4 text-xs">
+                <div className="text-center">
+                  <div className="text-gray-500">Entrada</div>
+                  <div className="font-semibold text-gray-700">
+                    {formatNumber(usage.input_tokens)}
+                  </div>
+                </div>
+                <div className="text-center">
+                  <div className="text-gray-500">Saída</div>
+                  <div className="font-semibold text-gray-700">
+                    {formatNumber(usage.output_tokens)}
+                  </div>
+                </div>
+                <div className="text-center bg-blue-100 px-2 py-1 rounded">
+                  <div className="text-blue-600 font-bold">
+                    {formatNumber(usage.total)}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+        {summary.grandTotal > 0 && (
+          <div className="border-t border-blue-200 pt-2 mt-3">
+            <div className="flex items-center justify-between bg-blue-100 rounded-md px-3 py-2">
+              <div className="flex items-center space-x-2">
+                <span className="text-lg">🎯</span>
+                <span className="text-sm font-bold text-blue-900">Total Geral</span>
+              </div>
+              <div className="text-lg font-bold text-blue-900">
+                {formatNumber(summary.grandTotal)} tokens
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 export default function Home() {
   const [currentStep, setCurrentStep] = useState<Step>('upload');
   const [userStory, setUserStory] = useState('');
@@ -25,8 +140,49 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [pollingStatus, setPollingStatus] = useState('');
   const [error, setError] = useState('');
+  
+  // Estados para tokens
+  const [tokenSummary, setTokenSummary] = useState<TokenSummary>({ grandTotal: 0 });
+  
+  // Estados para preview de arquivos
+  const [previewFile, setPreviewFile] = useState<{ content: string; name: string } | null>(null);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
   const contextFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Função para calcular tokens
+  const calculateTokenSummary = (extractedData?: any, codeData?: any, bddData?: any): TokenSummary => {
+    const summary: TokenSummary = { grandTotal: 0 };
+
+    if (extractedData?.input_tokens && extractedData?.output_tokens) {
+      summary.extraction = {
+        input_tokens: extractedData.input_tokens,
+        output_tokens: extractedData.output_tokens,
+        total: extractedData.input_tokens + extractedData.output_tokens
+      };
+      summary.grandTotal += summary.extraction.total;
+    }
+
+    if (codeData?.input_tokens && codeData?.output_tokens) {
+      summary.codeGeneration = {
+        input_tokens: codeData.input_tokens,
+        output_tokens: codeData.output_tokens,
+        total: codeData.input_tokens + codeData.output_tokens
+      };
+      summary.grandTotal += summary.codeGeneration.total;
+    }
+
+    if (bddData?.input_tokens && bddData?.output_tokens) {
+      summary.bddGeneration = {
+        input_tokens: bddData.input_tokens,
+        output_tokens: bddData.output_tokens,
+        total: bddData.input_tokens + bddData.output_tokens
+      };
+      summary.grandTotal += summary.bddGeneration.total;
+    }
+
+    return summary;
+  };
 
   // Função para converter arquivo para base64
   const fileToBase64 = (file: File): Promise<string> => {
@@ -34,7 +190,6 @@ export default function Home() {
       const reader = new FileReader();
       reader.readAsDataURL(file);
       reader.onload = () => {
-        // Remove "data:type/subtype;base64," prefix
         const base64 = (reader.result as string).split(',')[1];
         resolve(base64);
       };
@@ -45,7 +200,6 @@ export default function Home() {
   // Função de validação de arquivo atualizada
   const validateFile = async (file: File): Promise<{ valid: boolean; error?: string }> => {
     try {
-      // Buscar configurações da API
       const configResponse = await fetch('/api/generate-code', { method: 'GET' });
       const config = configResponse.ok ? await configResponse.json() : null;
       
@@ -76,7 +230,6 @@ export default function Home() {
     } catch (error) {
       console.warn('⚠️ Erro ao validar arquivo, usando validação padrão');
       
-      // Fallback para validação padrão - AGORA INCLUI PDF
       const allowedTypes = ['.txt', '.doc', '.docx', '.pdf'];
       const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
       
@@ -102,15 +255,13 @@ export default function Home() {
   const pollS3File = async (presignedUrl: string): Promise<string> => {
     console.log('🔍 Iniciando polling:', { presignedUrl });
     
-    // Configurações aumentadas para mais tempo
-    let maxAttempts = 90; // 90 tentativas = ~3 minutos
-    let interval = 2000;  // 2 segundos
+    let maxAttempts = 90;
+    let interval = 2000;
     
     try {
       const configResponse = await fetch('/api/generate-code', { method: 'GET' });
       if (configResponse.ok) {
         const config = await configResponse.json();
-        // Aumentar os valores padrão se necessário
         maxAttempts = Math.max(config.polling?.maxAttempts || 90, 90);
         interval = config.polling?.intervalMs || 2000;
         console.log('📊 Configurações de polling:', { maxAttempts, interval });
@@ -119,21 +270,16 @@ export default function Home() {
       console.warn('⚠️ Usando configurações padrão de polling');
     }
     
-    // Status mais amigável sem contador
     setPollingStatus('🤖 Gerando código... Isso pode levar alguns minutos.');
     
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        // Log interno apenas (não mostrar para usuário)
         console.log(`🔄 Tentativa ${attempt}/${maxAttempts}`);
         
-        // Fazer requisição direta (sem HEAD)
         const contentResponse = await fetch(presignedUrl);
         
         if (contentResponse.ok) {
           console.log(`✅ Arquivo encontrado na tentativa ${attempt}`);
-          
-          // Atualizar status para download
           setPollingStatus('📥 Código gerado! Baixando resultado...');
           
           const content = await contentResponse.text();
@@ -146,8 +292,7 @@ export default function Home() {
           console.log(`⚠️ Erro na tentativa ${attempt}: ${contentResponse.status}`);
         }
         
-        // Atualizar mensagem de progresso baseada no tempo
-        if (attempt % 15 === 0) { // A cada 30 segundos
+        if (attempt % 15 === 0) {
           const timeElapsed = Math.floor((attempt * interval) / 1000);
           setPollingStatus(`🤖 Gerando código... (${timeElapsed}s decorridos)`);
         }
@@ -171,7 +316,6 @@ export default function Home() {
   };
 
   const processFile = (file: File, type: 'story' | 'context') => {
-    // ATUALIZADO: Agora aceita PDF também
     const allowedTypes = ['.txt', '.doc', '.docx', '.pdf'];
     const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
     
@@ -191,7 +335,6 @@ export default function Home() {
     }
     setError('');
     
-    // Para PDFs, não tentar ler como texto (a lambda vai processar)
     if (fileExtension === '.pdf') {
       if (type === 'story') {
         setFileContent('[Arquivo PDF - conteúdo será processado pela IA]');
@@ -201,7 +344,6 @@ export default function Home() {
       return;
     }
     
-    // Para outros tipos, ler como texto
     const reader = new FileReader();
     reader.onload = (e) => {
       const content = (e.target?.result as string || '').trim();
@@ -244,7 +386,6 @@ export default function Home() {
       return;
     }
 
-    // Validar arquivo se estiver usando upload
     if (uploadedFile) {
       const validation = await validateFile(uploadedFile);
       if (!validation.valid) {
@@ -260,32 +401,27 @@ export default function Home() {
     try {
       const requestId = crypto.randomUUID();
       
-      // Preparar payload baseado se tem arquivo ou não
       let requestPayload: any = {
         language: selectedLanguage,
         requestId: requestId
       };
 
       if (uploadedFile) {
-        // Modo arquivo: enviar arquivos em base64
         console.log('📁 Enviando arquivo:', uploadedFile.name);
         
         const files = [];
         
-        // Arquivo principal (história) - AGORA SUPORTA PDF
         const mainFileBase64 = await fileToBase64(uploadedFile);
         files.push({
           name: uploadedFile.name,
           type: uploadedFile.type || 'text/plain',
           content: mainFileBase64,
-          category: 'story' // Identificar como história
+          category: 'story'
         });
 
-        // Arquivo de contexto (se existir) - AGORA SUPORTA PDF
         if (uploadedContextFile && contextFileContent.trim()) {
           console.log('📄 Incluindo arquivo de contexto:', uploadedContextFile.name);
           
-          // Validar arquivo de contexto também
           const contextValidation = await validateFile(uploadedContextFile);
           if (!contextValidation.valid) {
             setError(`Arquivo de contexto: ${contextValidation.error}`);
@@ -297,7 +433,7 @@ export default function Home() {
             name: uploadedContextFile.name,
             type: uploadedContextFile.type || 'text/plain',
             content: contextFileBase64,
-            category: 'context' // Identificar como contexto
+            category: 'context'
           });
         }
 
@@ -305,19 +441,18 @@ export default function Home() {
           ...requestPayload,
           inputType: "file",
           files: files,
-          userStory: "", // Vazio quando enviando arquivos
-          contexto: contextFileContent.trim() // ✅ MUDANÇA: contexto ao invés de contextualInfo
+          userStory: "",
+          contexto: contextFileContent.trim()
         };
 
       } else {
-        // Modo texto: enviar texto direto
         console.log('📝 Enviando texto direto');
         
         requestPayload = {
           ...requestPayload,
           inputType: "text", 
           userStory: content,
-          contexto: contextFileContent.trim() // ✅ MUDANÇA: contexto ao invés de contextualInfo
+          contexto: contextFileContent.trim()
         };
       }
 
@@ -326,7 +461,6 @@ export default function Home() {
         files: requestPayload.files ? `${requestPayload.files.length} arquivo(s)` : 'N/A'
       });
 
-      // Chamar API interna do Next.js
       const response = await fetch('/api/generate-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -353,20 +487,17 @@ export default function Home() {
       setPollingStatus('Aguardando processamento...');
       console.log('🔄 Iniciando polling:', presignedUrl);
 
-      // Fazer polling do resultado (agora com configurações dinâmicas)
       const generatedContent = await pollS3File(presignedUrl);
 
       if (!generatedContent) {
         throw new Error('Código não foi gerado');
       }
 
-      // Tentar parsear o resultado como JSON
       let parsedResult;
       try {
         parsedResult = JSON.parse(generatedContent);
         console.log('✅ JSON parseado:', parsedResult);
         
-        // 🔧 CORREÇÃO: Extrair código da estrutura das lambdas corrigidas
         let extractedCode = '';
         
         if (parsedResult.frontendData?.formattedCode) {
@@ -392,13 +523,12 @@ export default function Home() {
           extractedCode = JSON.stringify(parsedResult, null, 2);
         }
         
-        // Limpar o código removendo escapes desnecessários
         const cleanedCode = extractedCode
-          .replace(/\\n/g, '\n')      // Converter \\n para quebra de linha real
-          .replace(/\\t/g, '\t')      // Converter \\t para tab real
-          .replace(/\\"/g, '"')       // Converter \" para aspas normais
-          .replace(/\\\\/g, '\\')     // Converter \\\\ para \ simples
-          .trim();                    // Remover espaços extras
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, '\t')
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, '\\')
+          .trim();
         
         console.log('🧹 Código limpo:', {
           original: extractedCode.length,
@@ -408,9 +538,15 @@ export default function Home() {
         
         setGeneratedCode(cleanedCode);
         setEditedCode(cleanedCode);
+
+        // ✨ NOVA FUNCIONALIDADE: Calcular tokens após geração de código
+        const newTokenSummary = calculateTokenSummary(
+          parsedResult.extracted_data,
+          parsedResult.code_generated
+        );
+        setTokenSummary(newTokenSummary);
         
       } catch (parseError) {
-        // Se não for JSON válido, usar o conteúdo como texto
         console.log('📄 Resultado não é JSON, usando como texto');
         const cleanedContent = generatedContent
           .replace(/\\n/g, '\n')
@@ -463,15 +599,12 @@ export default function Home() {
         throw new Error('URL de monitoramento não foi fornecida');
       }
 
-      // ✅ ÚNICA ALTERAÇÃO: Melhorar o parsing do resultado
       const bddResult = await pollS3File(presignedUrl);
       
-      // Tentar parsear como JSON para extrair o BDD corretamente
       let finalBddContent = '';
       try {
         const parsedResult = JSON.parse(bddResult);
         
-        // Extrair BDD da estrutura correta retornada pela nova lambda
         if (parsedResult.bdd_generated?.content) {
           finalBddContent = parsedResult.bdd_generated.content;
         } else if (parsedResult.bdd?.content) {
@@ -481,15 +614,27 @@ export default function Home() {
         } else if (typeof parsedResult === 'string') {
           finalBddContent = parsedResult;
         } else {
-          // Fallback: usar resultado original se não encontrar estrutura conhecida
           finalBddContent = bddResult;
         }
+
+        // ✨ NOVA FUNCIONALIDADE: Atualizar tokens após geração de BDD
+        const updatedTokenSummary = calculateTokenSummary(
+          tokenSummary.extraction ? {
+            input_tokens: tokenSummary.extraction.input_tokens,
+            output_tokens: tokenSummary.extraction.output_tokens
+          } : undefined,
+          tokenSummary.codeGeneration ? {
+            input_tokens: tokenSummary.codeGeneration.input_tokens,
+            output_tokens: tokenSummary.codeGeneration.output_tokens
+          } : undefined,
+          parsedResult.bdd_generated
+        );
+        setTokenSummary(updatedTokenSummary);
+
       } catch (parseError) {
-        // Se não conseguir parsear JSON, usar o resultado direto
         finalBddContent = bddResult;
       }
       
-      // Garantir quebras de linha corretas
       finalBddContent = finalBddContent.replace(/\\n/g, '\n');
       
       setBddTest(finalBddContent);
@@ -505,26 +650,54 @@ export default function Home() {
     }
   };
 
-  const downloadFiles = () => {
+  const downloadFiles = async () => {
     const timestamp = new Date().toISOString().split('T')[0];
     const ext = selectedLanguage === 'python' ? 'py' : 'java';
     const fileName = selectedLanguage === 'python' ? 'generated_code' : 'GeneratedCode';
     
-    const codeBlob = new Blob([editedCode], { type: 'text/plain' });
-    const codeUrl = URL.createObjectURL(codeBlob);
-    const codeLink = document.createElement('a');
-    codeLink.href = codeUrl;
-    codeLink.download = `${fileName}_${timestamp}.${ext}`;
-    codeLink.click();
-    URL.revokeObjectURL(codeUrl);
+    try {
+      // Tentar usar JSZip se disponível (precisa instalar: npm install jszip)
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+      
+      // Adicionar arquivo de código
+      zip.file(`${fileName}_${timestamp}.${ext}`, editedCode);
+      
+      // Adicionar arquivo de testes BDD
+      zip.file(`test_${timestamp}.feature`, bddTest);
+      
+      // Gerar o ZIP e fazer download
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const zipUrl = URL.createObjectURL(zipBlob);
+      const zipLink = document.createElement('a');
+      zipLink.href = zipUrl;
+      zipLink.download = `generated_project_${timestamp}.zip`;
+      zipLink.click();
+      URL.revokeObjectURL(zipUrl);
+      
+    } catch (error) {
+      // Fallback: downloads separados se JSZip não estiver disponível
+      console.warn('JSZip não disponível, fazendo downloads separados');
+      
+      const codeBlob = new Blob([editedCode], { type: 'text/plain' });
+      const codeUrl = URL.createObjectURL(codeBlob);
+      const codeLink = document.createElement('a');
+      codeLink.href = codeUrl;
+      codeLink.download = `${fileName}_${timestamp}.${ext}`;
+      codeLink.click();
+      URL.revokeObjectURL(codeUrl);
 
-    const bddBlob = new Blob([bddTest], { type: 'text/plain' });
-    const bddUrl = URL.createObjectURL(bddBlob);
-    const bddLink = document.createElement('a');
-    bddLink.href = bddUrl;
-    bddLink.download = `test_${timestamp}.feature`;
-    bddLink.click();
-    URL.revokeObjectURL(bddUrl);
+      // Pequeno delay para evitar conflito de downloads
+      setTimeout(() => {
+        const bddBlob = new Blob([bddTest], { type: 'text/plain' });
+        const bddUrl = URL.createObjectURL(bddBlob);
+        const bddLink = document.createElement('a');
+        bddLink.href = bddUrl;
+        bddLink.download = `test_${timestamp}.feature`;
+        bddLink.click();
+        URL.revokeObjectURL(bddUrl);
+      }, 100);
+    }
   };
 
   const resetFlow = () => {
@@ -534,13 +707,14 @@ export default function Home() {
     setFileContent('');
     setUploadedContextFile(null);
     setContextFileContent('');
-    setShowFilePreview(false);
+    setPreviewFile(null); // Atualizado para usar previewFile
     setSelectedLanguage(null);
     setGeneratedCode('');
     setEditedCode('');
     setBddTest('');
     setPollingStatus('');
     setError('');
+    setTokenSummary({ grandTotal: 0 }); // Reset tokens
   };
 
   const steps = [
@@ -609,9 +783,7 @@ export default function Home() {
             <h2 className="text-2xl font-bold text-gray-900 mb-6">História de Usuário</h2>
             
             <div className="space-y-6">
-              {/* Campos lado a lado */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* História de Usuário */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     História de Usuário
@@ -655,7 +827,7 @@ export default function Home() {
                             </span>
                           ) : (
                             <button
-                              onClick={() => setShowFilePreview(true)}
+                              onClick={() => setPreviewFile({ content: fileContent, name: uploadedFile.name })}
                               className="px-2 py-1 text-xs text-blue-600 bg-blue-100 rounded hover:bg-blue-200"
                             >
                               <EyeIcon className="h-3 w-3 inline mr-1" />Visualizar
@@ -677,7 +849,6 @@ export default function Home() {
                   )}
                 </div>
 
-                {/* Contexto e Padronização */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Contexto e Padronização
@@ -715,10 +886,17 @@ export default function Home() {
                           <span className="text-xs text-gray-500">({(uploadedContextFile.size / 1024).toFixed(1)} KB)</span>
                         </div>
                         <div className="flex space-x-2">
-                          {uploadedContextFile.name.toLowerCase().endsWith('.pdf') && (
+                          {uploadedContextFile.name.toLowerCase().endsWith('.pdf') ? (
                             <span className="px-2 py-1 text-xs text-gray-600 bg-gray-100 rounded">
                               PDF será processado pela IA
                             </span>
+                          ) : (
+                            <button
+                              onClick={() => setPreviewFile({ content: contextFileContent, name: uploadedContextFile.name })}
+                              className="px-2 py-1 text-xs text-gray-600 bg-gray-100 rounded hover:bg-gray-200"
+                            >
+                              <EyeIcon className="h-3 w-3 inline mr-1" />Visualizar
+                            </button>
                           )}
                           <button
                             onClick={() => {
@@ -737,7 +915,6 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Texto alternativo */}
               {!uploadedFile && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -752,7 +929,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Seleção de linguagem */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-3">
                   Selecione a linguagem de programação
@@ -777,7 +953,6 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Status de polling */}
               {pollingStatus && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
                   <div className="flex items-center">
@@ -787,7 +962,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Botão de gerar */}
               <button
                 onClick={generateCode}
                 disabled={isLoading || (!userStory.trim() && !uploadedFile) || !selectedLanguage}
@@ -806,21 +980,20 @@ export default function Home() {
           </div>
         )}
 
-        {/* Preview Modal */}
-        {showFilePreview && (
+        {previewFile && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold">Preview do Arquivo</h3>
+                <h3 className="text-lg font-semibold">Preview: {previewFile.name}</h3>
                 <button
-                  onClick={() => setShowFilePreview(false)}
+                  onClick={() => setPreviewFile(null)}
                   className="text-gray-500 hover:text-gray-700"
                 >
                   <XMarkIcon className="h-6 w-6" />
                 </button>
               </div>
               <div className="bg-gray-50 p-4 rounded-md overflow-y-auto max-h-96">
-                <pre className="whitespace-pre-wrap text-sm">{fileContent}</pre>
+                <pre className="whitespace-pre-wrap text-sm">{previewFile.content}</pre>
               </div>
             </div>
           </div>
@@ -831,6 +1004,11 @@ export default function Home() {
             <h2 className="text-2xl font-bold text-gray-900 mb-6">Código Gerado</h2>
             
             <div className="space-y-6">
+              {/* ✨ NOVA FUNCIONALIDADE: Mostrar tokens na etapa de code-review */}
+              {tokenSummary.grandTotal > 0 && (
+                <TokenDisplay summary={tokenSummary} />
+              )}
+
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <label className="block text-sm font-medium text-gray-700">
@@ -875,6 +1053,11 @@ export default function Home() {
             <h2 className="text-2xl font-bold text-gray-900 mb-6">Downloads Prontos</h2>
             
             <div className="space-y-6">
+              {/* ✨ NOVA FUNCIONALIDADE: Mostrar resumo completo de tokens na etapa final */}
+              {tokenSummary.grandTotal > 0 && (
+                <TokenDisplay summary={tokenSummary} />
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="border border-gray-200 rounded-lg p-4">
                   <div className="flex items-center mb-3">
@@ -909,7 +1092,7 @@ export default function Home() {
                   className="flex-1 py-3 px-4 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center"
                 >
                   <ArrowDownTrayIcon className="h-5 w-5 mr-2" />
-                  Baixar Arquivos
+                  Baixar Projeto (.zip)
                 </button>
                 <button
                   onClick={resetFlow}

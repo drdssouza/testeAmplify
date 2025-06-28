@@ -40,7 +40,7 @@ const TokenDisplay: React.FC<TokenDisplayProps> = ({ summary, showTitle = true }
       case 'extraction':
         return '📄';
       case 'codeGeneration':
-        return '⚡';
+        return '🖥️​';
       case 'bddGeneration':
         return '🧪';
       default:
@@ -530,7 +530,7 @@ export default function Home() {
           .replace(/\\\\/g, '\\')
           .trim();
         
-        console.log('🧹 Código limpo:', {
+        console.log('Código limpo:', {
           original: extractedCode.length,
           cleaned: cleanedCode.length,
           preview: cleanedCode.substring(0, 100) + '...'
@@ -547,7 +547,7 @@ export default function Home() {
         setTokenSummary(newTokenSummary);
         
       } catch (parseError) {
-        console.log('📄 Resultado não é JSON, usando como texto');
+        console.log('Resultado não é JSON, usando como texto');
         const cleanedContent = generatedContent
           .replace(/\\n/g, '\n')
           .replace(/\\t/g, '\t')
@@ -559,10 +559,10 @@ export default function Home() {
       
       setCurrentStep('code-review');
       setPollingStatus('');
-      console.log('🎉 Código gerado com sucesso!');
+      console.log('Código gerado com sucesso!');
       
     } catch (error) {
-      console.error('💥 Erro na geração:', error);
+      console.error('Erro na geração:', error);
       setError(error instanceof Error ? error.message : 'Erro ao gerar código. Tente novamente.');
       setPollingStatus('');
     } finally {
@@ -617,7 +617,7 @@ export default function Home() {
           finalBddContent = bddResult;
         }
 
-        // ✨ NOVA FUNCIONALIDADE: Atualizar tokens após geração de BDD
+        // Atualizar tokens após geração de BDD
         const updatedTokenSummary = calculateTokenSummary(
           tokenSummary.extraction ? {
             input_tokens: tokenSummary.extraction.input_tokens,
@@ -656,7 +656,7 @@ export default function Home() {
     const fileName = selectedLanguage === 'python' ? 'generated_code' : 'GeneratedCode';
     
     try {
-      // Tentar usar JSZip se disponível (precisa instalar: npm install jszip)
+      // Tentar usar JSZip se disponível
       const JSZip = (await import('jszip')).default;
       const zip = new JSZip();
       
@@ -1004,7 +1004,7 @@ export default function Home() {
             <h2 className="text-2xl font-bold text-gray-900 mb-6">Código Gerado</h2>
             
             <div className="space-y-6">
-              {/* ✨ NOVA FUNCIONALIDADE: Mostrar tokens na etapa de code-review */}
+              {/*Mostrar tokens na etapa de code-review */}
               {tokenSummary.grandTotal > 0 && (
                 <TokenDisplay summary={tokenSummary} />
               )}
@@ -1053,7 +1053,7 @@ export default function Home() {
             <h2 className="text-2xl font-bold text-gray-900 mb-6">Downloads Prontos</h2>
             
             <div className="space-y-6">
-              {/* ✨ NOVA FUNCIONALIDADE: Mostrar resumo completo de tokens na etapa final */}
+              {/* Mostrar resumo completo de tokens na etapa final */}
               {tokenSummary.grandTotal > 0 && (
                 <TokenDisplay summary={tokenSummary} />
               )}

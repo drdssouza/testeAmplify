@@ -126,15 +126,18 @@ const analyzeRequirementsWithBedrock = async (userStory, contextualStandards, ta
   try {
     const prompt = buildAnalysisPrompt(userStory, contextualStandards, targetLanguage);
     
-        const bedrockResp = await callBedrock({
+    const bedrockResp = await callBedrock({
       modelId: 'amazon.nova-pro-v1:0',
       userPrompt: prompt,
       maxTokens: 4000,
       temperature: 0.1
     });
-
-    console.log(`Análise gerada: ${bedrockResp.response.message.length} caracteres`);
-return bedrockResp;
+    const responseBody = bedrockResp.response.message;
+const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+    const analysis = responseBody.output.message.content[0].text.trim();
+    
+    console.log(`Análise gerada: ${analysis.length} caracteres`);
+    return analysis;
     
   } catch (error) {
     console.error('Erro na análise com Bedrock:', error);
@@ -362,11 +365,11 @@ export const handler = async (event) => {
     );
     
     // Extrair seções estruturadas da análise
-    const structuredSections = extractStructuredRequirements(technicalAnalysis.response.message);
+    const structuredSections = extractStructuredRequirements(technicalAnalysis);
     
     // Gerar diretrizes finais para geração de código
     const codeGenerationDirectives = generateCodeGenerationDirectives(
-      technicalAnalysis.response.message,
+      technicalAnalysis,
       structuredSections,
       targetLanguage
     );
@@ -378,7 +381,7 @@ export const handler = async (event) => {
     
     // Preparar resposta estruturada
     const response = {
-      statuscode: technicalAnalysis.statuscode,
+      statuscode: 200,
       requestId,
       filename: body.filename,
       start_timestamp: body.start_timestamp,
@@ -388,9 +391,7 @@ export const handler = async (event) => {
         content: codeGenerationDirectives,
         rawUserStory: userStoryContent,
         rawContext: contextualStandards,
-        technicalAnalysis: technicalAnalysis.response.message,
-        input_tokens:technicalAnalysis.response.input_tokens,
-        output_tokens:technicalAnalysis.response.output_tokens,
+        technicalAnalysis: technicalAnalysis,
         structuredSections: structuredSections,
         s3ContextKey: s3AnalysisKey,
         contentLength: codeGenerationDirectives.length,

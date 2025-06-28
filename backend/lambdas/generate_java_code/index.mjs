@@ -12,7 +12,7 @@ export const handler = async event => {
     extracted_data = {}
   } = body;
 
-  const lang = (user_data.language || 'python').toLowerCase();
+  const lang = (user_data.language || 'java').toLowerCase();
   const modelKey = `generate_${lang}_code_model`;
   const promptKey = `generate_${lang}_code_prompt`;
 

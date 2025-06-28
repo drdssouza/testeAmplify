@@ -14,9 +14,71 @@ provider "aws" {
 
 
 # S3 bucket para salvar resultados
+###############################################################################
+#  S3 bucket + CORS + Public-Access Block + Bucket Policy
+###############################################################################
+
+# 1) Bucket
 resource "aws_s3_bucket" "results" {
   bucket        = var.result_bucket_name
   force_destroy = true
+}
+
+# 2) Public-access block
+resource "aws_s3_bucket_public_access_block" "results" {
+  bucket = aws_s3_bucket.results.id
+
+  block_public_acls       = true
+  ignore_public_acls      = true
+  block_public_policy     = false # ← libera bucket policy pública
+  restrict_public_buckets = false
+}
+
+# 3) CORS
+resource "aws_s3_bucket_cors_configuration" "results" {
+  bucket = aws_s3_bucket.results.id
+
+  cors_rule {
+    allowed_methods = ["GET", "HEAD"]
+    allowed_origins = [
+      "http://localhost:3000",
+      "https://localhost:3000",
+      "https://*.amplifyapp.com",
+      "*"
+    ]
+    allowed_headers = ["*"]
+    expose_headers  = ["ETag", "x-amz-meta-custom-header", "Content-Length"]
+    max_age_seconds = 3000
+  }
+
+  depends_on = [aws_s3_bucket.results]
+}
+
+# 4) Bucket-policy JSON
+data "aws_iam_policy_document" "results_public_read" {
+  statement {
+    sid    = "PublicReadGetObject"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.results.arn}/*"]
+  }
+}
+
+# 5) Bucket-policy resource
+resource "aws_s3_bucket_policy" "results" {
+  bucket = aws_s3_bucket.results.id
+  policy = data.aws_iam_policy_document.results_public_read.json
+
+  depends_on = [
+    aws_s3_bucket.results,
+    aws_s3_bucket_public_access_block.results # garante que o bloqueio já foi ajustado
+  ]
 }
 
 # IAM ROLE para todas as Lambdas
@@ -104,10 +166,12 @@ data "archive_file" "bdd_test_zip" {
 resource "aws_lambda_layer_version" "bedrock_layer" {
   layer_name          = "bedrock-layer"
   filename            = "${path.module}/../layers/bedrock-layer.zip"
+    source_code_hash    = filebase64sha256("${path.module}/../layers/bedrock-layer.zip")
   compatible_runtimes = ["nodejs22.x", "nodejs20.x", "nodejs18.x"] # Múltiplas versões
   license_info        = "Apache-2.0"
   description         = "SDK Bedrock e utilitários"
 }
+
 # Lambda functions
 
 resource "aws_lambda_function" "stepfunction_trigger" {
